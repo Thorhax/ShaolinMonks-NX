@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(ShaolinMonksNX VERSION 0.1.0 LANGUAGES C CXX)
+project(ShaolinMonksNX VERSION 0.2.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -48,7 +48,10 @@ execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/too
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${UPSTREAM}/tools/prepare_recomp_runtime.py" "${CMAKE_CURRENT_SOURCE_DIR}/tools/port_runtime.py")
 
-# the recompiled game
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/upstream_mods.cmake")
+
+# the recompiled game; each function reaches mod routines through upstream's bridge
+set(ROUTINE_BRIDGE "${UPSTREAM}/src/mods/routine_bridge.h")
 file(GLOB GEN_SOURCES "${GEN}/x86_recomp.*.cpp")
 list(APPEND GEN_SOURCES "${GEN}/x86_func_mapping.cpp" "${GEN}/xbe_sha1.cpp")
 if(PORT_PLATFORM STREQUAL "switch")
@@ -58,9 +61,9 @@ if(PORT_PLATFORM STREQUAL "switch")
         get_filename_component(name "${src}" NAME)
         string(REGEX REPLACE "\\.cpp$" ".o" name "${name}")
         set(obj "${CMAKE_CURRENT_BINARY_DIR}/game/${name}")
-        add_custom_command(OUTPUT "${obj}" DEPENDS "${src}"
+        add_custom_command(OUTPUT "${obj}" DEPENDS "${src}" "${ROUTINE_BRIDGE}"
             COMMAND "${NX_GAME_CLANG}" -std=c++20 ${NX_GAME_CLANG_FLAGS} ${GENERATED_OPT} -g0 -fno-strict-aliasing -w
-                    -I "${SDK}/runtime" -I "${GEN}" -c "${src}" -o "${obj}"
+                    -I "${SDK}/runtime" -I "${GEN}" -include "${ROUTINE_BRIDGE}" -c "${src}" -o "${obj}"
             COMMENT "game code ${name}" VERBATIM)
         list(APPEND GAME_OBJECTS "${obj}")
     endforeach()
@@ -68,7 +71,7 @@ if(PORT_PLATFORM STREQUAL "switch")
 else()
     add_library(shaolin_game OBJECT ${GEN_SOURCES})
     target_include_directories(shaolin_game PRIVATE "${SDK}/runtime" "${GEN}")
-    target_compile_options(shaolin_game PRIVATE ${GENERATED_OPT} -g0 -fno-strict-aliasing -w)
+    target_compile_options(shaolin_game PRIVATE ${GENERATED_OPT} -g0 -fno-strict-aliasing -w -include "${ROUTINE_BRIDGE}")
     set(GAME_OBJECTS $<TARGET_OBJECTS:shaolin_game>)
 endif()
 
@@ -80,7 +83,7 @@ set(PORTED_SOURCES boot files threads memory d3d8 xapi dsound vertex shaders ren
 list(TRANSFORM PORTED_SOURCES PREPEND "${PORTED}/")
 list(TRANSFORM PORTED_SOURCES APPEND ".cpp")
 set(SHAOLIN_SOURCES "${UPSTREAM}/src/game_preferences.cpp" "${UPSTREAM}/src/raster_compat.cpp" "${UPSTREAM}/src/mouse_state.cpp"
-    ${IMGUI_CORE})
+    ${IMGUI_CORE} ${UPSTREAM_MOD_SOURCES})
 file(GLOB PORT_COMMON "${CMAKE_CURRENT_SOURCE_DIR}/port/common/*.cpp")
 
 if(PORT_PLATFORM STREQUAL "headless")
@@ -93,7 +96,7 @@ if(PORT_PLATFORM STREQUAL "headless")
         "${SDK}/runtime" "${GEN}" "${H}" "${H}/compat")
     target_compile_definitions(shaolin_headless PRIVATE XBE_RAW_VERTICES=0 XBE_RENDER_THREAD=0)
     target_compile_options(shaolin_headless PRIVATE -fno-strict-aliasing -O1 -g)
-    target_link_libraries(shaolin_headless PRIVATE tomlplusplus::tomlplusplus pthread)
+    target_link_libraries(shaolin_headless PRIVATE tomlplusplus::tomlplusplus ${UPSTREAM_MOD_LIBS} pthread)
     target_compile_options(shaolin_game PRIVATE -march=x86-64-v2)
 endif()
 
@@ -115,7 +118,7 @@ if(PORT_PLATFORM STREQUAL "linux-vk")
     target_compile_definitions(shaolin_vk PRIVATE XBE_RAW_VERTICES=0 ENABLE_HLSL=1)
     target_compile_options(shaolin_vk PRIVATE -fno-strict-aliasing -O1 -g)
     target_include_directories(shaolin_vk SYSTEM PRIVATE "${VULKAN_INCLUDE}")
-    target_link_libraries(shaolin_vk PRIVATE tomlplusplus::tomlplusplus pthread "${VULKAN_LOADER}"
+    target_link_libraries(shaolin_vk PRIVATE tomlplusplus::tomlplusplus ${UPSTREAM_MOD_LIBS} pthread "${VULKAN_LOADER}"
         glslang::glslang glslang::SPIRV glslang::glslang-default-resource-limits)
     target_compile_options(shaolin_game PRIVATE -march=x86-64-v2)
 endif()
@@ -126,9 +129,11 @@ if(PORT_PLATFORM STREQUAL "switch")
     add_executable(shaolin_nx ${RUNTIME_SOURCES} ${PORTED_SOURCES} ${SHAOLIN_SOURCES} ${PORT_COMMON} ${PORT_NX} ${GAME_OBJECTS}
         "${CMAKE_CURRENT_SOURCE_DIR}/port/vk/vk_backend.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/port/vk/vk_shader.cpp" ${IMGUI_VULKAN})
     set_source_files_properties(${GAME_OBJECTS} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+    # newlib's limits.h gives C++ no LLONG_MAX unless <climits> came first, and Lua's luaconf.h needs it
+    set_source_files_properties("${UPSTREAM}/src/mods/routines.cpp" PROPERTIES COMPILE_OPTIONS "-include;climits")
     target_include_directories(shaolin_nx PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/port" "${CMAKE_CURRENT_SOURCE_DIR}/port/common"
         "${UPSTREAM}/src" "${SDK}/runtime" "${GEN}" "${SDK}/harness/compat")
-    target_compile_definitions(shaolin_nx PRIVATE XBE_RAW_VERTICES=0 XBE_RENDER_THREAD=$<BOOL:${NX_RENDER_THREAD}> ENABLE_HLSL=1)
+    target_compile_definitions(shaolin_nx PRIVATE PORT_VERSION="${PROJECT_VERSION}" XBE_RAW_VERTICES=0 XBE_RENDER_THREAD=$<BOOL:${NX_RENDER_THREAD}> ENABLE_HLSL=1)
     target_include_directories(shaolin_nx SYSTEM PRIVATE "${NVK_SDK}/include")
     target_compile_options(shaolin_nx PRIVATE -fno-strict-aliasing -O2 -g -Wno-psabi)
     target_link_options(shaolin_nx PRIVATE "-Wl,-Map,${CMAKE_CURRENT_BINARY_DIR}/shaolin_nx.map")
@@ -142,7 +147,7 @@ if(PORT_PLATFORM STREQUAL "switch")
         COMMENT "indexing NVK" VERBATIM)
     add_custom_target(nvk_indexed DEPENDS "${NVK_LIB}")
     add_dependencies(shaolin_nx nvk_indexed)
-    target_link_libraries(shaolin_nx PRIVATE tomlplusplus::tomlplusplus glslang::glslang glslang::SPIRV
+    target_link_libraries(shaolin_nx PRIVATE tomlplusplus::tomlplusplus ${UPSTREAM_MOD_LIBS} glslang::glslang glslang::SPIRV
         glslang::glslang-default-resource-limits
         -Wl,--start-group "${NVK_LIB}" expat zstd z nx m -Wl,--end-group)
     # NVK's Rust libraries each bundle the Rust runtime
@@ -155,7 +160,7 @@ if(PORT_PLATFORM STREQUAL "switch")
     # a new icon remakes the NRO, which is made after each link
     set_property(TARGET shaolin_nx APPEND PROPERTY LINK_DEPENDS "${NRO_ICON}")
     add_custom_command(TARGET shaolin_nx POST_BUILD
-        COMMAND "${NX_TOOLS}/nacptool" --create "Shaolin Monks Recomp" "Thorhax" "${PROJECT_VERSION}" "${CMAKE_CURRENT_BINARY_DIR}/shaolinmonks.nacp"
+        COMMAND "${NX_TOOLS}/nacptool" --create "Shaolin Monks NX" "Thorhax" "${PROJECT_VERSION}" "${CMAKE_CURRENT_BINARY_DIR}/shaolinmonks.nacp"
         COMMAND "${NX_TOOLS}/elf2nro" "$<TARGET_FILE:shaolin_nx>" "${CMAKE_CURRENT_BINARY_DIR}/shaolinmonks.nro"
                 "--icon=${NRO_ICON}" "--nacp=${CMAKE_CURRENT_BINARY_DIR}/shaolinmonks.nacp"
         COMMENT "shaolinmonks.nro" VERBATIM)

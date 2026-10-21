@@ -22,7 +22,7 @@ namespace {
 // a message on the console until the player presses +
 [[noreturn]] void Fatal(const char* text) {
     consoleInit(nullptr);
-    std::printf("\n  Shaolin Monks Recomp\n\n  %s\n\n  Log: %s\n\n  Press + to exit.\n", text, logx::Path().c_str());
+    std::printf("\n  Shaolin Monks NX\n\n  %s\n\n  Log: %s\n\n  Press + to exit.\n", text, logx::Path().c_str());
     consoleUpdate(nullptr);
     PadState pad;
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
@@ -58,6 +58,7 @@ int main(int, char**) {
     logx::Init(shaolin::paths::Logs().string(), app::kGame.log);
     nx::InstallCrashLog();
     app::Load();
+    LOGR("Shaolin Monks NX %s by Thorhax", PORT_VERSION);
     app::LogSystem();
     const AppletType type = appletGetAppletType();
     u64 total = 0, used = 0;

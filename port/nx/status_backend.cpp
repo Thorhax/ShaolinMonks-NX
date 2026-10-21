@@ -16,7 +16,7 @@ class StatusBackend final : public Backend {
 public:
     bool Init(uint32_t w, uint32_t h) override {
         consoleInit(nullptr);
-        std::printf("\x1b[2J\n  Shaolin Monks Recomp: bring-up build, no graphics yet\n  Title back buffer %ux%u\n", w, h);
+        std::printf("\x1b[2J\n  Shaolin Monks NX: bring-up build, no graphics yet\n  Title back buffer %ux%u\n", w, h);
         consoleUpdate(nullptr);
         start_ = last_ = std::chrono::steady_clock::now();
         return true;

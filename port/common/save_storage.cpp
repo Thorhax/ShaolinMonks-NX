@@ -121,7 +121,7 @@ bool PrepareDirectory(const fs::path&, const fs::path& destination, std::string&
     return !ec;
 }
 
-fs::path SavedGamesRoot(std::string&) { return {}; }
+fs::path SavedGamesRoot(std::string&, bool) { return {}; }
 
 DirectoryLock::~DirectoryLock() = default;
 bool DirectoryLock::Acquire(const fs::path&, std::string&) { return true; }

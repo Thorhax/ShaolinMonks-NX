@@ -11,7 +11,7 @@ You need your own copy of the game. Nothing of the game is in this repository or
 
 - Runs the story at full speed (60 fps), with audio. Tested in handheld mode; docked and Ko-op are untested.
 - Saving and loading through the game's save shrines.
-- A quick menu with cheats, save slots and an FPS counter.
+- A quick menu with cheats and an FPS counter.
 - The game's button prompts show Switch buttons.
 
 ## Requirements
@@ -37,8 +37,8 @@ The first start writes `settings.toml` there, and makes these folders:
 | Folder | Holds |
 |---|---|
 | `hdd/` | the Xbox hard disk: saves are in `hdd/E/UDATA/4d570029/`, with backups of the last saves in `hdd/.backups/` |
-| `slots/` | the quick menu's save slots |
 | `cache/` | compiled shaders and pipelines (the first visit to an area compiles them; later runs are smoother) |
+| `mods/` | mods and language packs, copied from a PC install of ShaolinMonksRecomp (see Known limitations) |
 | `logs/` | the log of the last four runs (`shaolin-recomp.log`, then `.1` to `.3`), and `crash.log` after a crash |
 
 ## Controls
@@ -66,13 +66,11 @@ kneel; kneeling also restores health.
 
 Hold **−** and press **+** to open it; the game sees no input while it is open.
 
-- **Save slot / Load slot:** four slots, each a copy of the game's saves. Save in the game first, then copy it to a
-  slot; to go back, load a slot, then choose *Load Game* on the main menu. Slots hold what the game saved, not the
-  moment: they are not emulator-style save states.
 - **Cheats**, set for player 1 and player 2 separately (the Player row at the top):
   Invincibility, Infinite energy (the blue bar), 999,999 experience, Fatality meter always full, Moon jump (hold
-  jump to rise). For both players at once: 10x damage to enemies, Unlock everything (saved with your progress the
-  next time the game saves).
+  jump to rise). For both players at once: 10x damage to enemies, Unlock everything, and Unlock all fatalities (every
+  character's fatalities named, with their buttons, in the Moves tab of the pause menu). The unlocks are saved with
+  your progress the next time the game saves.
 - **Show FPS**, and **Button icons** (Switch or Xbox).
 
 ## Settings
@@ -119,9 +117,11 @@ build adapts their files into the build folder and never changes them.
 
 - The output is 720p in both modes; docked, the Switch scales it.
 - No emulator-style save states: the recompiled game keeps its place in native call stacks, which a snapshot cannot
-  restore. Save slots and the shrines are the way to go back.
+  restore. Save at the shrines.
 - 10x damage is new and lightly tested.
-- ShaolinMonksRecomp 0.2.0's mod manager and language packs are not in this version yet.
+- ShaolinMonksRecomp's Krypt mod manager (browsing and downloading mods) is not included. Mods and language packs
+  still load: install them with ShaolinMonksRecomp on a PC, then copy the whole contents of its `mods` folder
+  (with `installed.toml`) into `/switch/shaolinmonks/mods/`. Untested on the console so far.
 
 ## Credits
 

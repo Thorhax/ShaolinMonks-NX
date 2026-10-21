@@ -2,8 +2,8 @@
 #include "launcher.h"
 
 const app::GameInfo app::kGame = {
-    .title = L"Shaolin Monks Recomp",
-    .short_title = L"Shaolin Monks Recomp",
+    .title = L"Shaolin Monks NX",
+    .short_title = L"Shaolin Monks NX",
     .name = L"ShaolinMonksRecomp",
     .log = "shaolin-recomp",
     .settings = "settings.toml",

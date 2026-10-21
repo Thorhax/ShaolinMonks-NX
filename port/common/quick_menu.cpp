@@ -6,9 +6,7 @@
 #include "quick_menu.h"
 
 #include <algorithm>
-#include <array>
 #include <atomic>
-#include <chrono>
 #include <cstdio>
 #include <mutex>
 #include <string>
@@ -20,12 +18,12 @@
 namespace port::menu {
 namespace {
 
-enum class Page { Main, SaveSlots, LoadSlots, Cheats };
+enum class Page { Main, Cheats };
 
 constexpr uint32_t kChord = kMinus | kPlus;
-constexpr int kMainItems = 6;
-constexpr int kMainShowFps = 4;
-constexpr int kMainIcons = 5;
+constexpr int kMainItems = 4;
+constexpr int kMainShowFps = 2;
+constexpr int kMainIcons = 3;
 
 std::mutex g_lock;
 bool g_visible = false;
@@ -33,27 +31,14 @@ bool g_capture_until_release = false;
 bool g_show_fps = false;
 Page g_page = Page::Main;
 int g_selection = 0;
-std::array<std::string, cheats::kSlots> g_slot_info;
-std::string g_status;
 std::atomic<bool> g_switch_icons{true};
 std::atomic<uint32_t> g_icons_epoch{1};
 void (*g_save)() = nullptr;
 int g_cheat_player = 0;  // whose cheats the page shows
-std::chrono::steady_clock::time_point g_status_until{};
-
-void SetStatus(std::string message) {
-    g_status = std::move(message);
-    g_status_until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-}
-
-void RefreshSlots() {
-    for (int s = 0; s < cheats::kSlots; s++) g_slot_info[size_t(s)] = cheats::SlotInfo(s);
-}
 
 void SetPage(Page page) {
     g_page = page;
     g_selection = 0;
-    if (page == Page::SaveSlots || page == Page::LoadSlots) RefreshSlots();
 }
 
 void Open() {
@@ -69,8 +54,6 @@ void Close() {
 int ItemCount() {
     switch (g_page) {
         case Page::Main: return kMainItems;
-        case Page::SaveSlots:
-        case Page::LoadSlots: return cheats::kSlots + 1;
         case Page::Cheats: return cheats::kCount + 2;  // the player, the cheats, Back
     }
     return 1;
@@ -86,9 +69,7 @@ void Activate() {
         case Page::Main:
             switch (g_selection) {
                 case 0: Close(); break;
-                case 1: SetPage(Page::SaveSlots); break;
-                case 2: SetPage(Page::LoadSlots); break;
-                case 3: SetPage(Page::Cheats); break;
+                case 1: SetPage(Page::Cheats); break;
                 case kMainShowFps: g_show_fps = !g_show_fps; break;
                 case kMainIcons:
                     SetSwitchIcons(!g_switch_icons);
@@ -96,25 +77,6 @@ void Activate() {
                     break;
             }
             break;
-        case Page::SaveSlots:
-        case Page::LoadSlots: {
-            if (g_selection == cheats::kSlots) {
-                SetPage(Page::Main);
-                break;
-            }
-            const int slot = g_selection;
-            if (g_page == Page::SaveSlots) {
-                cheats::SaveSlot(slot);
-                SetStatus("Saved to slot " + std::to_string(slot + 1));
-                g_slot_info[size_t(slot)] = "Saved just now";
-            } else if (g_slot_info[size_t(slot)] == "Empty") {
-                SetStatus("Slot " + std::to_string(slot + 1) + " is empty");
-            } else {
-                cheats::LoadSlot(slot);
-                SetStatus("Slot " + std::to_string(slot + 1) + " restored: use Load Game on the main menu");
-            }
-            break;
-        }
         case Page::Cheats:
             if (g_selection == 0) g_cheat_player = 1 - g_cheat_player;
             else if (g_selection == cheats::kCount + 1) SetPage(Page::Main);
@@ -137,24 +99,11 @@ void Row(const std::string& label, int index, float height) {
 
 void MainPage(float row) {
     Row("Resume game", 0, row);
-    Row("Save slot                                        >", 1, row);
-    Row("Load slot                                        >", 2, row);
-    Row("Cheats                                           >", 3, row);
+    Row("Cheats                                           >", 1, row);
     Row(std::string("Show FPS                           <  ") + (g_show_fps ? "Enabled" : "Disabled") + "  >", kMainShowFps, row);
     Row(std::string("Button icons                       <  ") + (g_switch_icons ? "Switch" : "Xbox") + "  >", kMainIcons, row);
     ImGui::Separator();
     CenteredText("D-Pad  Navigate     A  Select     B  Close     Minus + Plus  Toggle");
-}
-
-void SlotPage(bool saving, float row) {
-    for (int s = 0; s < cheats::kSlots; s++) Row("Slot " + std::to_string(s + 1) + "      " + g_slot_info[size_t(s)], s, row);
-    Row("Back", cheats::kSlots, row);
-    ImGui::Separator();
-    ImGui::PushTextWrapPos(ImGui::GetWindowWidth() - 20.0f);
-    ImGui::TextDisabled("%s", saving ? "Copies the game's save folder: save in the game first, then here."
-                                     : "Puts a copy back as the game's save; then choose Load Game on the main menu.");
-    ImGui::PopTextWrapPos();
-    CenteredText(saving ? "A  Save     B  Back" : "A  Load     B  Back");
 }
 
 void CheatPage(float row) {
@@ -169,7 +118,8 @@ void CheatPage(float row) {
     Row("Back", cheats::kCount + 1, row);
     ImGui::Separator();
     ImGui::PushTextWrapPos(ImGui::GetWindowWidth() - 20.0f);
-    ImGui::TextDisabled("Unlock everything is saved with your progress the next time the game saves.");
+    ImGui::TextDisabled("The unlocks are saved with your progress the next time the game saves; fatalities show in the "
+                        "Moves tab of the pause menu.");
     ImGui::PopTextWrapPos();
     CenteredText("A  Toggle     Left / Right  Player 1 or 2     B  Back");
 }
@@ -242,11 +192,6 @@ void Draw(float fps) {
         std::snprintf(text, sizeof text, "%.1f FPS", fps);
         badge(text, {16.0f * scale, 12.0f * scale}, IM_COL32(0, 0, 0, 150));
     }
-    const bool status = !g_status.empty() && std::chrono::steady_clock::now() < g_status_until;
-    if (status && !g_visible) {
-        const ImVec2 extent = font->CalcTextSizeA(text_size, 1e9f, 0.0f, g_status.c_str());
-        badge(g_status.c_str(), {16.0f * scale, io.DisplaySize.y - extent.y - 16.0f * scale}, IM_COL32(7, 28, 44, 220));
-    }
     if (!g_visible) return;
 
     ImGui::GetBackgroundDrawList()->AddRectFilled({0.0f, 0.0f}, io.DisplaySize, IM_COL32(0, 0, 0, 132));
@@ -268,20 +213,12 @@ void Draw(float fps) {
         const float row = 44.0f * scale;
         switch (g_page) {
             case Page::Main: CenteredText("Quick Menu"); break;
-            case Page::SaveSlots: CenteredText("Save Slot"); break;
-            case Page::LoadSlots: CenteredText("Load Slot"); break;
             case Page::Cheats: CenteredText("Cheats"); break;
         }
         ImGui::Separator();
         switch (g_page) {
             case Page::Main: MainPage(row); break;
-            case Page::SaveSlots: SlotPage(true, row); break;
-            case Page::LoadSlots: SlotPage(false, row); break;
             case Page::Cheats: CheatPage(row); break;
-        }
-        if (status) {
-            ImGui::SetCursorPos({20.0f * scale, 18.0f * scale});
-            ImGui::TextColored({0.55f, 0.92f, 1.0f, 1.0f}, "%s", g_status.c_str());
         }
     }
     ImGui::End();

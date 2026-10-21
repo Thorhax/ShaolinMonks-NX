@@ -40,11 +40,12 @@ def main():
         if not path.exists() or path.read_text(encoding="utf-8") != text:
             path.write_text(text, encoding="utf-8")
 
+    # upstream's Linux layer stands in for a few Win32 calls with platform_compat.h, whose Linux headers Horizon
+    # lacks: the port's own takes its place (the ported files find it first, in their own folder)
+    write("platform_compat.h", '#pragma once\n#include "port_compat.h"\n')
+
     # game behaviour fixes from upstream, carried over unchanged apart from Win32 includes
     files = strip_win32_includes((args.adapted / "files.cpp").read_text(encoding="utf-8"))
-    files = replace_once(files, "            if (GetFileAttributesW(current.c_str()) != INVALID_FILE_ATTRIBUTES &&\n"
-                         "                (GetFileAttributesW(current.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT)) return {};",
-                         "            if (std::error_code ec; fs::is_symlink(current, ec)) return {};", "files.cpp")
     # each file system call logs the errors it hands the title, with errno: the SD card's file system and
     # newlib differ from a PC's in ways only the title's reaction shows
     files = replace_once(files, '#include "kernel/exports.h"\n', '''#include "kernel/exports.h"
@@ -179,8 +180,8 @@ static uint32_t Finish(File& f,''', "files.cpp")
                          'return Finish(*f, status, n, event, apc, apc_ctx, iosb); }\n'
                          '        if (!f->save_reported) { f->save_reported = true; LOGR("save: writing %s", f->xbox.c_str()); }\n    }',
                          "files.cpp")
-    files = replace_once(files, "    uint64_t size = f->dir ? 0 : f->entry ? f->entry->size : fs::file_size(f->host, ec);",
-                         "    uint64_t size = f->dir ? 0 : f->entry ? f->entry->size : HeldSize(*f, ec);", "files.cpp")
+    files = replace_once(files, "f->entry ? f->entry->size : fs::file_size(f->host, ec);",
+                         "f->entry ? f->entry->size : HeldSize(*f, ec);", "files.cpp")
     files = replace_once(files, "        size = fs::file_size(f->host, ec);", "        size = HeldSize(*f, ec);", "files.cpp")
     files = replace_once(files, "                uint64_t size = fs::file_size(f->host, ec);",
                          "                uint64_t size = HeldSize(*f, ec);", "files.cpp")

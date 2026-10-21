@@ -1,25 +1,17 @@
 #include "cheats.h"
 
+#include <algorithm>
 #include <array>
 #include <unordered_map>
 #include <bit>
 #include <atomic>
-#include <cerrno>
-#include <cstdio>
 #include <cstring>
-#include <ctime>
-#include <filesystem>
-#include <mutex>
-#include <system_error>
 #include <vector>
 
-#include "app/app.h"
 #include "core/log.h"
 #include "cpu/x86_ops.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
-
-namespace fs = std::filesystem;
 
 namespace port::cheats {
 namespace {
@@ -40,6 +32,14 @@ constexpr float kMoonJumpSpeed = -60.0f;  // upward; a jump starts at -105
 constexpr uint32_t kBitMasks = 0x4FC348;  // the title's table of 1 << n
 constexpr uint32_t kUnlockBits = 0x5A375C, kUnlockBytes = 0x5A3790 - kUnlockBits;
 constexpr uint32_t kExperienceValue = 999999;
+// the move list (the pause menu's Moves tab): [0x4EFA88] is its root, a node with a count at +0x0C and its children
+// at +0x14 (the root's at +0x10), a text id at +0x18; a character's list is a child of the root, the Fatalities
+// heading one of its children (text 0x190), the fatalities that heading's children
+constexpr uint32_t kMoveList = 0x4EFA88, kFatalitiesHeading = 0x190;
+// the fatalities performed, by their text ids, for every character: the menu shows those and "???" for the rest
+// (0x03E890 adds one; it is part of the progress the title saves)
+constexpr uint32_t kKnownFatalities = 0x4DF5DC, kKnownFatalityCount = 0x4DFC1C;
+constexpr uint32_t kKnownFatalitiesMax = (kKnownFatalityCount - kKnownFatalities) / 4;
 
 // per player; a cheat for the whole game keeps its setting in player 0's
 std::array<std::array<std::atomic<bool>, kCount>, kPlayers> g_on{};
@@ -51,9 +51,8 @@ std::unordered_map<uint32_t, uint32_t> g_weakened;
 // the unlock bits before "unlock everything", put back when it is turned off
 std::array<uint8_t, kUnlockBytes> g_unlock_before{};
 bool g_unlock_applied = false;
-
-std::mutex g_queue_lock;
-std::vector<int> g_saves, g_loads;  // slots, 0 based
+// the fatalities "unlock all fatalities" added to the known ones, taken out again when it is turned off
+std::vector<uint32_t> g_fatalities_added;
 
 bool Readable(uint32_t va, uint32_t size) { return va >= 0x10000 && mem::IsCommitted(va) && mem::IsCommitted(va + size - 1); }
 
@@ -128,108 +127,73 @@ void WeakenEnemies(bool on) {
     }
 }
 
+// every character's fatalities, by text id, from the move list
+std::vector<uint32_t> AllFatalities() {
+    std::vector<uint32_t> out;
+    const auto children = [](uint32_t node, uint32_t list_at, std::vector<uint32_t>& to) {
+        const uint32_t n = kernel::R32(node + 0x0C), list = kernel::R32(node + list_at);
+        if (n == 0 || n > 64 || !Readable(list, n * 4)) return;
+        for (uint32_t i = 0; i < n; i++)
+            if (const uint32_t c = kernel::R32(list + i * 4); Readable(c, 0x30)) to.push_back(c);
+    };
+    const uint32_t root = kernel::R32(kMoveList);
+    if (!Readable(root, 0x18)) return out;
+    std::vector<uint32_t> characters, headings, moves;
+    children(root, 0x10, characters);
+    for (uint32_t character : characters) {
+        headings.clear();
+        children(character, 0x14, headings);
+        for (uint32_t h : headings) {
+            if (kernel::R32(h + 0x18) != kFatalitiesHeading) continue;
+            moves.clear();
+            children(h, 0x14, moves);
+            for (uint32_t m : moves) out.push_back(kernel::R32(m + 0x18));
+        }
+    }
+    return out;
+}
+
+bool KnownFatality(uint32_t text) {
+    const uint32_t n = std::min(kernel::R32(kKnownFatalityCount), kKnownFatalitiesMax);
+    for (uint32_t i = 0; i < n; i++)
+        if (kernel::R32(kKnownFatalities + i * 4) == text) return true;
+    return false;
+}
+
+// unlock all fatalities: each one not performed yet is added to the known ones (the move list is loaded with the
+// first level, so this is done again until it is there); turned off, the ones it added are taken out
+void UnlockFatalities(bool on) {
+    if (!mem::IsCommitted(kKnownFatalities) || !mem::IsCommitted(kKnownFatalityCount)) return;
+    uint32_t n = std::min(kernel::R32(kKnownFatalityCount), kKnownFatalitiesMax);
+    if (on) {
+        const size_t before = g_fatalities_added.size();
+        for (uint32_t text : AllFatalities()) {
+            if (KnownFatality(text) || n >= kKnownFatalitiesMax) continue;
+            kernel::W32(kKnownFatalities + n * 4, text);
+            kernel::W32(kKnownFatalityCount, ++n);
+            g_fatalities_added.push_back(text);
+        }
+        if (g_fatalities_added.size() != before)
+            LOGR("cheat: %zu fatalities unlocked", g_fatalities_added.size() - before);
+        return;
+    }
+    uint32_t kept = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t text = kernel::R32(kKnownFatalities + i * 4);
+        if (std::find(g_fatalities_added.begin(), g_fatalities_added.end(), text) == g_fatalities_added.end())
+            kernel::W32(kKnownFatalities + kept++ * 4, text);
+    }
+    kernel::W32(kKnownFatalityCount, kept);
+    LOGR("cheat: %zu unlocked fatalities taken back", g_fatalities_added.size());
+    g_fatalities_added.clear();
+}
+
 int PlayerCharacter(uint32_t c) {
     const uint32_t state = GameState();
     if (!c || !state) return -1;
     for (int p = 0; p < Players(state); p++)
         if (Character(p) == c) return p;
     return -1;
-}
-
-// --- save slots: the title's whole folder on the virtual hard disk, copied file by file (std::filesystem::copy
-// would set permissions, which Horizon's SD card does not have)
-
-fs::path SaveFolder() { return app::ExeDir() / "hdd" / "E" / "UDATA" / "4d570029"; }
-fs::path SlotFolder(int slot) { return app::ExeDir() / "slots" / std::to_string(slot + 1); }
-
-bool CopyFile(const fs::path& from, const fs::path& to) {
-    FILE* in = std::fopen(from.c_str(), "rb");
-    if (!in) return false;
-    FILE* out = std::fopen(to.c_str(), "wb");
-    bool ok = out != nullptr;
-    char buf[16384];
-    for (size_t n; ok && (n = std::fread(buf, 1, sizeof buf, in)) != 0;) ok = std::fwrite(buf, 1, n, out) == n;
-    ok = ok && !std::ferror(in);
-    std::fclose(in);
-    if (out && std::fclose(out)) ok = false;
-    return ok;
-}
-
-bool CopyTree(const fs::path& from, const fs::path& to) {
-    std::error_code ec;
-    fs::create_directories(to, ec);
-    if (ec) return false;
-    for (auto it = fs::directory_iterator(from, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
-        const fs::path target = to / it->path().filename();
-        const bool ok = it->is_directory(ec) ? CopyTree(it->path(), target) : CopyFile(it->path(), target);
-        if (!ok) return false;
-    }
-    return !ec;
-}
-
-// The title's save folders (one per profile, e.g. 80482ECC5634) are what a slot keeps. The files beside them
-// (TitleMeta.xbx and the images) never change, and the title holds them open, which Horizon will not let go.
-std::vector<fs::path> SaveFolders(const fs::path& root) {
-    std::vector<fs::path> out;
-    std::error_code ec;
-    for (auto it = fs::directory_iterator(root, ec); !ec && it != fs::directory_iterator(); it.increment(ec))
-        if (it->is_directory(ec)) out.push_back(it->path());
-    return out;
-}
-
-void DoSave(int slot) {
-    std::error_code ec;
-    const fs::path dir = SlotFolder(slot), staging = dir.string() + ".new";
-    fs::remove_all(staging, ec);
-    const auto folders = SaveFolders(SaveFolder());
-    if (folders.empty()) {
-        LOGW("save slot %d: the game has not saved yet (%s)", slot + 1, SaveFolder().c_str());
-        return;
-    }
-    for (const auto& f : folders)
-        if (!CopyTree(f, staging / f.filename())) {
-            LOGE("save slot %d: copy failed (errno %d)", slot + 1, errno);
-            fs::remove_all(staging, ec);
-            return;
-        }
-    fs::remove_all(dir, ec);
-    fs::rename(staging, dir, ec);
-    LOGR("save slot %d: saved %zu save folder(s)", slot + 1, folders.size());
-}
-
-void DoLoad(int slot) {
-    std::error_code ec;
-    const fs::path live = SaveFolder();
-    fs::remove_all(live.string() + ".old", ec);  // left by the first version of this
-    const auto kept = SaveFolders(SlotFolder(slot));
-    if (kept.empty()) return;
-    for (const auto& f : SaveFolders(live)) {
-        bool in_slot = false;
-        for (const auto& k : kept) in_slot = in_slot || k.filename() == f.filename();
-        if (!in_slot) fs::remove_all(f, ec);
-    }
-    for (const auto& k : kept)
-        if (!CopyTree(k, live / k.filename())) {
-            LOGE("save slot %d: restore of %s failed (errno %d)", slot + 1, k.filename().c_str(), errno);
-            return;
-        }
-    LOGR("save slot %d: restored %zu save folder(s)", slot + 1, kept.size());
-}
-
-// when the slot's newest file was written: Horizon keeps no times for folders
-std::filesystem::file_time_type SlotTime(int slot, std::error_code& ec) {
-    std::filesystem::file_time_type newest{};
-    bool any = false;
-    for (auto it = fs::recursive_directory_iterator(SlotFolder(slot), ec); !ec && it != fs::recursive_directory_iterator();
-         it.increment(ec)) {
-        std::error_code e;
-        if (!it->is_regular_file(e)) continue;
-        const auto t = fs::last_write_time(it->path(), e);
-        if (!e && (!any || t > newest)) newest = t;
-        any = any || !e;
-    }
-    if (!ec && !any) ec = std::make_error_code(std::errc::no_such_file_or_directory);
-    return newest;
 }
 
 }  // namespace
@@ -239,6 +203,7 @@ const char* Name(int cheat) {
         case kInvincible: return "Invincibility";
         case kMaxExperience: return "999,999 experience";
         case kUnlockAll: return "Unlock everything";
+        case kUnlockFatalities: return "Unlock all fatalities";
         case kEnergy: return "Infinite energy (blue bar)";
         case kFatalityMeter: return "Fatality meter always full";
         case kDamage10x: return "10x damage to enemies";
@@ -247,7 +212,7 @@ const char* Name(int cheat) {
     return "";
 }
 
-bool PerPlayer(int cheat) { return cheat != kUnlockAll && cheat != kDamage10x; }
+bool PerPlayer(int cheat) { return cheat != kUnlockAll && cheat != kUnlockFatalities && cheat != kDamage10x; }
 
 bool Enabled(int cheat, int player) {
     return cheat >= 0 && cheat < kCount && player >= 0 && player < kPlayers && On(cheat, player).load();
@@ -261,28 +226,6 @@ void Toggle(int cheat, int player) {
     else LOGR("cheat: %s %s", Name(cheat), on ? "on" : "off");
 }
 
-std::string SlotInfo(int slot) {
-    std::error_code ec;
-    const auto t = SlotTime(slot, ec);
-    if (ec) return "Empty";
-    const auto sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-        t - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
-    const std::time_t when = std::chrono::system_clock::to_time_t(sys);
-    char text[64];
-    std::strftime(text, sizeof text, "%Y-%m-%d %H:%M", std::localtime(&when));
-    return text;
-}
-
-void SaveSlot(int slot) {
-    std::lock_guard<std::mutex> lock(g_queue_lock);
-    g_saves.push_back(slot);
-}
-
-void LoadSlot(int slot) {
-    std::lock_guard<std::mutex> lock(g_queue_lock);
-    g_loads.push_back(slot);
-}
-
 int PlayerOf(uint32_t character) { return PlayerCharacter(character); }
 
 void NoteJump(int player, bool held) {
@@ -290,17 +233,6 @@ void NoteJump(int player, bool held) {
 }
 
 void OnFrame(X86Context& ctx) {
-    {
-        std::vector<int> saves, loads;
-        {
-            std::lock_guard<std::mutex> lock(g_queue_lock);
-            saves.swap(g_saves);
-            loads.swap(g_loads);
-        }
-        for (int s : saves) DoSave(s);
-        for (int s : loads) DoLoad(s);
-    }
-
     // unlock everything: the title's own developer routine; turning it off puts the bits back as they were
     const bool unlock = On(kUnlockAll, 0).load();
     if (unlock != g_unlock_applied && mem::IsCommitted(kUnlockBits)) {
@@ -313,6 +245,8 @@ void OnFrame(X86Context& ctx) {
         g_unlock_applied = unlock;
         LOGR("cheat: unlock bits %s", unlock ? "set" : "restored");
     }
+
+    if (On(kUnlockFatalities, 0) || !g_fatalities_added.empty()) UnlockFatalities(On(kUnlockFatalities, 0));
 
     const uint32_t state = GameState();
     if (!state) return;

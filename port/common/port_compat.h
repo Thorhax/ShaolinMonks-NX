@@ -31,3 +31,7 @@ void NameThread(const char* name);
 void OnRenderThread();
 
 }  // namespace port
+
+// the few Win32 calls upstream's portable files keep (its platform_compat.h on Linux)
+inline unsigned long GetCurrentProcessId() { return 1; }
+inline uint64_t GetTickCount64() { return port::TickMs(); }

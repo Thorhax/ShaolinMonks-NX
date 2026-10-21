@@ -845,7 +845,7 @@ bool VulkanBackend::Init(uint32_t width, uint32_t height) {
 
 bool VulkanBackend::CreateInstance() {
     VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    ai.pApplicationName = "Shaolin Monks Recomp";
+    ai.pApplicationName = "Shaolin Monks NX";
     ai.apiVersion = VK_API_VERSION_1_3;  // the highest the renderer uses; 1.2 devices run with extensions
     auto ext = platform_.InstanceExtensions();
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
@@ -2056,7 +2056,7 @@ int BcOf(VkFormat f) {
 }
 
 void VulkanBackend::UploadTexture(Tex& tx, const TextureDesc& d, const uint8_t* p, const uint32_t* colours, uint64_t id) {
-    // The font atlas with the button icons is drawn on: it is kept as BGRA from then on, and any BC source decoded
+    // The textures with the button icons are drawn on: it is kept as BGRA from then on, and any BC source decoded
     const int source_bc = tx.dsc.format == d.format && tx.icons_bc ? tx.icons_bc : BcOf(tx.fmt);
     const bool icons = vkr::icons::SwitchIcons() && vkr::icons::IsButtonAtlas(id) && !d.cube && d.depth <= 1;
     if (icons && tx.fmt != kBgra && source_bc) {
@@ -2068,7 +2068,7 @@ void VulkanBackend::UploadTexture(Tex& tx, const TextureDesc& d, const uint8_t* 
             static_cast<Image&>(tx) = fresh;
             tx.dsc = dsc;
             tx.icons_bc = source_bc;
-            LOGR("vulkan: Switch button icons drawn over the font atlas");
+            LOGR("vulkan: Switch button icons drawn over texture %016llx", (unsigned long long)id);
         }
     }
     Transition(tx, Use::CopyDst);
@@ -2081,8 +2081,9 @@ void VulkanBackend::UploadTexture(Tex& tx, const TextureDesc& d, const uint8_t* 
             uint32_t pitch;
             DecodeLevel(d, l, f, p, colours, px, pitch);
             const uint32_t lw = std::max(1u, tx.w >> l), lh = std::max(1u, tx.h >> l), ld = std::max(1u, tx.d >> l);
-            if (tx.fmt == kBgra && source_bc) {
-                // a BC source kept as BGRA; with the icons, the smaller levels are made from the drawn-on first one
+            if (tx.fmt == kBgra && (source_bc || icons)) {
+                // a BC source kept as BGRA, or a BGRA one; with the icons, the smaller levels are made from the
+                // drawn-on first one
                 std::vector<uint8_t> bgra;
                 uint32_t bgra_pitch = 0;
                 if (icons && l > 0 && !drawn.empty()) {
@@ -2098,8 +2099,18 @@ void VulkanBackend::UploadTexture(Tex& tx, const TextureDesc& d, const uint8_t* 
                             }
                     bgra_pitch = lw * 4;
                 } else {
-                    vkbc::Decode(source_bc, px.data(), pitch, lw, lh, ld, bgra, bgra_pitch);
-                    if (icons && l == 0) vkr::icons::Paint(bgra.data(), lw, lh, bgra_pitch);
+                    if (source_bc) {
+                        vkbc::Decode(source_bc, px.data(), pitch, lw, lh, ld, bgra, bgra_pitch);
+                    } else {
+                        // tightly packed, so the smaller levels can be made from it
+                        bgra.resize(size_t(lw) * lh * 4);
+                        for (uint32_t y = 0; y < lh; y++) std::memcpy(&bgra[size_t(y) * lw * 4], &px[size_t(y) * pitch], size_t(lw) * 4);
+                        bgra_pitch = lw * 4;
+                    }
+                    if (icons && l == 0) {
+                        vkr::icons::Paint(id, bgra.data(), lw, lh, bgra_pitch);
+                        if (!source_bc && f == 0) LOGR("vulkan: Switch button icons drawn over texture %016llx", (unsigned long long)id);
+                    }
                 }
                 if (icons) drawn = bgra;
                 px.swap(bgra);

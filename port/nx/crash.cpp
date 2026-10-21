@@ -51,7 +51,7 @@ bool Readable(u64 a) {
         g_inside = true;
         logx::FlushUnlocked();
         if (FILE* f = std::fopen(g_path, "w")) {
-            std::fprintf(f, "Shaolin Monks Recomp stopped: %s\n%s\nnro base %p\n\n", reason, detail ? detail : "",
+            std::fprintf(f, "Shaolin Monks NX stopped: %s\n%s\nnro base %p\n\n", reason, detail ? detail : "",
                          reinterpret_cast<void*>(g_code));
             Address(f, "from", caller);
             // the caller's callers, from the frame records
@@ -116,7 +116,7 @@ extern "C" void __libnx_exception_handler(ThreadExceptionDump* ctx) {
         g_inside = true;
         logx::FlushUnlocked();
         if (FILE* f = std::fopen(g_path, "w")) {
-            std::fprintf(f, "Shaolin Monks Recomp crash\nexception %X esr %08X  thread %08X\nnro base %p\n\n", ctx->error_desc,
+            std::fprintf(f, "Shaolin Monks NX crash\nexception %X esr %08X  thread %08X\nnro base %p\n\n", ctx->error_desc,
                          ctx->esr, (unsigned)threadGetCurHandle(), reinterpret_cast<void*>(g_code));
             Address(f, "pc", ctx->pc.x);
             Address(f, "lr", ctx->lr.x);

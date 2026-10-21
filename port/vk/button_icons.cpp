@@ -10,6 +10,8 @@ namespace vkr::icons {
 namespace {
 
 constexpr uint64_t kAtlas = 0xd4068777901abbaaull;
+constexpr uint64_t kHud = 0x613d44d9f6026755ull;
+constexpr uint64_t kSans = 0xcefaed4c0aa6bda2ull;
 
 // 5 x 7 letters, a row per byte, the high bit of the five on the left
 struct Glyph {
@@ -26,7 +28,19 @@ constexpr Glyph kLetters[] = {
     {'Z', {0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F}},
 };
 
-const Glyph* Find(char c) {
+// 3 x 5 letters for two-letter labels on the smallest keys, the high bit of the three on the left
+constexpr Glyph kSmall[] = {
+    {'L', {0x4, 0x4, 0x4, 0x4, 0x7}},
+    {'R', {0x6, 0x5, 0x6, 0x5, 0x5}},
+    {'Z', {0x7, 0x1, 0x2, 0x4, 0x7}},
+};
+
+const Glyph* Find(char c, bool small = false) {
+    if (small) {
+        for (const Glyph& g : kSmall)
+            if (g.c == c) return &g;
+        return nullptr;
+    }
     for (const Glyph& g : kLetters)
         if (g.c == c) return &g;
     return nullptr;
@@ -65,21 +79,25 @@ float Cover(int x, int y, Inside inside) {
     return n / 16.0f;
 }
 
-// text centred on (cx, cy), letters 5 x 7 scaled to the height given
+// text centred on (cx, cy), letters 5 x 7 scaled to the height given. Under 7 pixels a scaled letter blurs, so
+// it is drawn pixel for pixel instead, and a label of two letters in the 3 x 5 ones
 void Text(Canvas& c, const char* s, float cx, float cy, float height) {
-    const float scale = height / 7.0f, advance = 6 * scale;
     const size_t n = std::strlen(s);
-    const float x0 = cx - (n * advance - scale) / 2, y0 = cy - height / 2;
+    const bool tiny = height < 7, small = tiny && n > 1;
+    const int gw = small ? 3 : 5, gh = small ? 5 : 7;
+    const float scale = tiny ? 1 : height / 7.0f, advance = (gw + 1) * scale;
+    float x0 = cx - (n * advance - scale) / 2, y0 = cy - gh * scale / 2;
+    if (tiny) x0 = std::round(x0), y0 = std::round(y0);
     for (size_t i = 0; i < n; i++) {
-        const Glyph* g = Find(s[i]);
+        const Glyph* g = Find(s[i], small);
         if (!g) continue;
         const float gx = x0 + i * advance;
         auto inside = [&](float x, float y) {
             const int col = int(std::floor((x - gx) / scale)), row = int(std::floor((y - y0) / scale));
-            return col >= 0 && col < 5 && row >= 0 && row < 7 && (g->rows[row] >> (4 - col) & 1);
+            return col >= 0 && col < gw && row >= 0 && row < gh && (g->rows[row] >> (gw - 1 - col) & 1);
         };
-        for (int y = int(y0) - 1; y <= int(y0 + height) + 1; y++)
-            for (int x = int(gx) - 1; x <= int(gx + 5 * scale) + 1; x++) c.Blend(x, y, kInk, Cover(x, y, inside));
+        for (int y = int(y0) - 1; y <= int(y0 + gh * scale) + 1; y++)
+            for (int x = int(gx) - 1; x <= int(gx + gw * scale) + 1; x++) c.Blend(x, y, kInk, Cover(x, y, inside));
     }
 }
 
@@ -114,13 +132,8 @@ void Key(Canvas& c, int x0, int y0, int x1, int y1, const char* label) {
     Text(c, label, (x0 + x1 + 1) / 2.0f, (y0 + y1 + 1) / 2.0f, (y1 - y0 + 1) * 0.45f);
 }
 
-}  // namespace
-
-bool IsButtonAtlas(uint64_t id) { return id == kAtlas; }
-
-void Paint(uint8_t* bgra, uint32_t width, uint32_t height, uint32_t pitch) {
-    if (width != 256 || height != 512) return;
-    Canvas c{bgra, width, height, pitch};
+// the font atlas: the menus' and prompts' icons
+void PaintAtlas(Canvas& c) {
     // the face buttons, by position: Xbox X (left) Y (top) A (bottom) B (right) are the Switch's Y X B A
     Button(c, 147, 231, 164, 248, "Y");
     Button(c, 168, 231, 185, 248, "X");
@@ -132,6 +145,40 @@ void Paint(uint8_t* bgra, uint32_t width, uint32_t height, uint32_t pitch) {
     // the triggers' "L | R" key: ZL and ZR
     Key(c, 189, 210, 207, 227, "ZL");
     Key(c, 210, 210, 228, 227, "ZR");
+}
+
+// the HUD sheet: the bigger coloured buttons of the save and load screens and the move list, and the left
+// trigger's key
+void PaintHud(Canvas& c) {
+    Button(c, 57, 114, 87, 144, "X");
+    Button(c, 89, 114, 119, 144, "Y");
+    Button(c, 57, 146, 87, 176, "B");
+    Button(c, 89, 146, 119, 176, "A");
+    Key(c, 191, 178, 229, 205, "ZL");
+}
+
+// the small font (128x128): the save and load screens' and the move list's prompts. Its White and Black buttons
+// are balls of their own, and the triggers are the "L" and "R" keys
+void PaintSans(Canvas& c) {
+    Button(c, 71, 112, 82, 123, "Y");
+    Button(c, 83, 112, 94, 123, "X");
+    Button(c, 95, 112, 106, 123, "B");
+    Button(c, 107, 112, 118, 123, "A");
+    Button(c, 95, 100, 105, 110, "L");
+    Button(c, 12, 113, 22, 123, "R");
+    Key(c, 107, 100, 118, 110, "ZL");
+    Key(c, 0, 113, 10, 123, "ZR");
+}
+
+}  // namespace
+
+bool IsButtonAtlas(uint64_t id) { return id == kAtlas || id == kHud || id == kSans; }
+
+void Paint(uint64_t id, uint8_t* bgra, uint32_t width, uint32_t height, uint32_t pitch) {
+    Canvas c{bgra, width, height, pitch};
+    if (id == kAtlas && width == 256 && height == 512) PaintAtlas(c);
+    if (id == kHud && width == 256 && height == 256) PaintHud(c);
+    if (id == kSans && width == 128 && height == 128) PaintSans(c);
 }
 
 bool SwitchIcons() { return port::menu::SwitchIcons(); }

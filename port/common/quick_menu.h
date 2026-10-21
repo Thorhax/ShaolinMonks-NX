@@ -4,7 +4,7 @@
 // In-game quick menu, adapted for Shaolin Monks from YabaSanshiro's NX overlay, itself from NaGa's Dolphin NX
 // frontend (Source/Core/DolphinSwitch/RuntimeOverlay). Kept: the page and selection model, controller navigation,
 // Minus + Plus to open it, and the ImGui drawing and style. The pages are this port's: cheats on the title's own
-// variables and save slots (see cheats.h). Drawn by the renderer over each frame (vk_overlay.cpp).
+// variables (see cheats.h). Drawn by the renderer over each frame (vk_overlay.cpp).
 #pragma once
 
 #include <cstdint>

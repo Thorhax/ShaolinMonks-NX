@@ -13,6 +13,9 @@ their parts; full texts are in this folder where the project ships one.
 | [Dear ImGui](https://github.com/ocornut/imgui) 1.91.0 | the quick menu | MIT ([DearImGui-MIT.txt](DearImGui-MIT.txt)) |
 | [toml++](https://github.com/marzer/tomlplusplus) 3.4.0 | `settings.toml` | MIT ([tomlplusplus-MIT.txt](tomlplusplus-MIT.txt)) |
 | [libnx](https://github.com/switchbrew/libnx) and devkitA64 (newlib, libstdc++) | the Switch system library and C/C++ runtime | ISC (libnx); newlib's licences; GPL with the GCC Runtime Library Exception (libstdc++) |
+| [Lua](https://www.lua.org) 5.4.9 | mod routines | MIT ([Lua-MIT.txt](Lua-MIT.txt)) |
+| [miniz](https://github.com/richgel999/miniz) | reading mod and language pack archives | MIT ([miniz-MIT.txt](miniz-MIT.txt)) |
+| [XZ Embedded](https://github.com/tukaani-project/xz-embedded) | unpacking compressed mods | 0BSD ([xz-embedded-0BSD.txt](xz-embedded-0BSD.txt)) |
 | [Zydis](https://github.com/zyantific/zydis) 4.1.1 | the recompiler, on the build machine only | MIT |
 
 `port/vk/bc_decode.*` is ShaolinMonksRecomp's BC decoder, unchanged apart from its include path.

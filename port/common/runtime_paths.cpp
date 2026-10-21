@@ -33,6 +33,18 @@ fs::path Cache() { return root / "cache"; }
 fs::path Crashes() { return root / "crashes"; }
 fs::path Captures() { return Cache(); }
 fs::path Selection() { return root / "game-source.toml"; }
+fs::path Mods() { return root / "mods"; }
+const fs::path& SaveRoot() { return root; }
+const std::string& MoveWarning() {
+    static const std::string none;
+    return none;
+}
+// the launcher's folder choices; this host keeps everything in its one folder
+bool ChangeFolders(const fs::path&, const fs::path&, std::string& error) {
+    error = "The data folder is fixed on this host.";
+    return false;
+}
+bool DataFolderOverridden() { return false; }
 std::string Description() { return "{\"root\":\"" + root.string() + "\"}"; }
 
 std::wstring ErrorText(const std::wstring& reason, const fs::path&) { return reason; }
