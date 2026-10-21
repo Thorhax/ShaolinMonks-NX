@@ -1,0 +1,287 @@
+"""Make the upstream host adaptations portable, writing only build outputs.
+
+Runs after ShaolinMonksRecomp's tools/prepare_recomp_runtime.py. That script
+adapts the pinned SDK for the Windows host; this one removes the Win32-only
+parts of those adapted files and patches the few SDK runtime files whose
+POSIX paths do not suit Horizon. Neither checkout is changed.
+"""
+import argparse
+from pathlib import Path
+
+
+def replace_once(text, old, new, name):
+    if text.count(old) != 1:
+        raise ValueError(f"{name}: source changed at required port adaptation: {old[:70]!r}")
+    return text.replace(old, new, 1)
+
+
+def strip_win32_includes(text):
+    lines = []
+    for line in text.splitlines(keepends=True):
+        s = line.strip()
+        if s in ("#include <windows.h>", "#include <shobjidl.h>", "#undef CreateSymbolicLink"):
+            continue
+        lines.append(line)
+    return "".join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sdk", required=True, type=Path)
+    parser.add_argument("--adapted", required=True, type=Path, help="prepare_recomp_runtime.py output")
+    parser.add_argument("--upstream", required=True, type=Path, help="ShaolinMonksRecomp checkout")
+    parser.add_argument("--out", required=True, type=Path)
+    args = parser.parse_args()
+    args.out.mkdir(parents=True, exist_ok=True)
+
+    def write(name, text):
+        path = args.out / name
+        # keep timestamps when nothing changed, so reconfiguring does not rebuild
+        if not path.exists() or path.read_text(encoding="utf-8") != text:
+            path.write_text(text, encoding="utf-8")
+
+    # game behaviour fixes from upstream, carried over unchanged apart from Win32 includes
+    files = strip_win32_includes((args.adapted / "files.cpp").read_text(encoding="utf-8"))
+    files = replace_once(files, "            if (GetFileAttributesW(current.c_str()) != INVALID_FILE_ATTRIBUTES &&\n"
+                         "                (GetFileAttributesW(current.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT)) return {};",
+                         "            if (std::error_code ec; fs::is_symlink(current, ec)) return {};", "files.cpp")
+    # each file system call logs the errors it hands the title, with errno: the SD card's file system and
+    # newlib differ from a PC's in ways only the title's reaction shows
+    files = replace_once(files, '#include "kernel/exports.h"\n', '''#include "kernel/exports.h"
+#undef KERNEL_EXPORT
+#define KERNEL_EXPORT(ord, name, nargs)                                                                   \\
+    static uint32_t kimpl_##name(X86Context& ctx, const ::kernel::Args& a);                              \\
+    static void kentry_##name(X86Context& ctx, uint8_t*) {                                               \\
+        ::kernel::Args args{ctx};                                                                        \\
+        errno = 0;                                                                                       \\
+        uint32_t r = kimpl_##name(ctx, args);                                                            \\
+        static std::atomic<int> warned{0};                                                               \\
+        if (r >= 0x80000000u && warned.fetch_add(1) < 20) LOGW("%s -> %08X (errno %d)", #name, r, errno); \\
+        ::kernel::Return(ctx, r, nargs);                                                                 \\
+    }                                                                                                    \\
+    static const bool kreg_##name = (::kernel::RegisterExport(ord, #name, kentry_##name), true);         \\
+    static uint32_t kimpl_##name([[maybe_unused]] X86Context& ctx, [[maybe_unused]] const ::kernel::Args& a)
+''', "files.cpp")
+    files = files.replace("        if (ec) { IoStatus(iosb, shaolin::storage::kIoError, 0); return shaolin::storage::kIoError; }",
+                          "        if (ec) { LOGW(\"files: line %d: %s\", __LINE__, ec.message().c_str());"
+                          " IoStatus(iosb, shaolin::storage::kIoError, 0); return shaolin::storage::kIoError; }")
+    # Horizon refuses to open a file a second time while it is open for writing, and newlib's stat, truncate and
+    # rename by path all open it: on a file the title holds, they go through its own handle instead
+    files = replace_once(files, "static uint32_t Finish(File& f,", '''static uint64_t HeldSize(File& f, std::error_code& ec) {
+    if (!f.fp) return fs::file_size(f.host, ec);
+    struct stat st;
+    if (fstat(fileno(f.fp), &st)) {
+        ec = std::error_code(errno, std::generic_category());
+        return 0;
+    }
+    ec.clear();
+    return uint64_t(st.st_size);
+}
+
+static void HeldResize(File& f, uint64_t size, std::error_code& ec) {
+    if (!f.fp) return fs::resize_file(f.host, size, ec);
+    if (ftruncate(fileno(f.fp), off_t(size))) ec = std::error_code(errno, std::generic_category());
+    else ec.clear();
+}
+
+// closed for the rename, then opened again under its new name (or its old one, when the rename fails)
+static void HeldRename(File& f, const fs::path& to, std::error_code& ec) {
+    if (!f.fp) return fs::rename(f.host, to, ec);
+    std::fclose(f.fp);
+    fs::rename(f.host, to, ec);
+    f.fp = std::fopen((ec ? f.host : to).string().c_str(), "r+b");
+    if (!f.fp && !ec) ec = std::error_code(errno, std::generic_category());
+}
+
+// the save backup reads the file, which the title holds open: closed for the copy, then opened again
+static uint32_t HeldBackup(File& f) {
+    if (!f.fp) return shaolin::storage::BeforeWrite(f.host);
+    std::fflush(f.fp);
+    std::fclose(f.fp);
+    const uint32_t status = shaolin::storage::BeforeWrite(f.host);
+    f.fp = std::fopen(f.host.string().c_str(), "r+b");
+    return f.fp ? status : shaolin::storage::kIoError;
+}
+
+static uint32_t Finish(File& f,''', "files.cpp")
+    files = files.replace("shaolin::storage::BeforeWrite(f->host)", "HeldBackup(*f)")
+    # each save file operation, the first few hundred, to set a hardware run beside a PC one
+    files = replace_once(files, '#include "kernel/exports.h"\n', '''#include "kernel/exports.h"
+// GENERIC_WRITE, GENERIC_ALL, FILE_WRITE_DATA, FILE_APPEND_DATA, FILE_WRITE_EA, FILE_WRITE_ATTRIBUTES, DELETE
+static bool WantsWrite(uint32_t access) { return access & (0x40000000u | 0x10000000u | 0x2u | 0x4u | 0x10u | 0x100u | 0x10000u); }
+
+static std::atomic<int> g_save_trace{0};
+static uint32_t Fnv(const void* p, size_t n) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < n; i++) h = (h ^ static_cast<const uint8_t*>(p)[i]) * 16777619u;
+    return h;
+}
+#define SAVE_TRACE(host, ...) \\
+    do { if (shaolin::storage::IsSave(host) && g_save_trace.fetch_add(1) < 400) LOGR("save trace: " __VA_ARGS__); } while (0)
+''', "files.cpp")
+    files = replace_once(files, '''    W32(handle_out, NewHandle(f));
+    IoStatus(iosb, kSuccess, info);
+    LOG_FIRST(400, "open %s", name.c_str());''', '''    W32(handle_out, NewHandle(f));
+    IoStatus(iosb, kSuccess, info);
+    LOG_FIRST(400, "open %s", name.c_str());
+    SAVE_TRACE(f->host, "create %s mode %s disposition %u access %08X options %08X -> handle %08X", name.c_str(), mode,
+               disposition, a[1], options, R32(handle_out));''', "files.cpp")
+    files = replace_once(files, '''    (void)options;
+    W32(handle_out, NewHandle(f));
+    IoStatus(iosb, kSuccess, 1);''', '''    (void)options;
+    W32(handle_out, NewHandle(f));
+    IoStatus(iosb, kSuccess, 1);
+    SAVE_TRACE(f->host, "open %s %s -> handle %08X", name.c_str(), f->dir ? "folder" : f->fp ? "file" : "?", R32(handle_out));''', "files.cpp")
+    files = replace_once(files, "    if (!write && len && !n) return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);",
+                         '    SAVE_TRACE(f->host, "%s handle %08X at %llu, %u of %u bytes, fnv %08X", write ? "write" : "read", h, '
+                         '(unsigned long long)pos, n, len, pages ? 0u : Fnv(HostPtr(buf), n));\n'
+                         "    if (!write && len && !n) return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);", "files.cpp")
+    files = replace_once(files, '''        size = fs::file_size(f->host, ec);
+        if (ec) {''', '''        size = fs::file_size(f->host, ec);
+        SAVE_TRACE(f->host, "query handle %08X class %u: size %llu%s", h, cls, (unsigned long long)size, ec ? " (failed)" : "");
+        if (ec) {''', "files.cpp")
+    # A file the title opens only to read is opened read only. Horizon lets nothing else open a file held for
+    # writing, not even stat: a save the title reads looked unreadable to its own size and time queries.
+    files = replace_once(files, "static uint32_t Finish(File& f,", '''// size and time from the handle where the title holds the file open
+static void FillHeldNetworkInfo(uint32_t out, File& f) {
+    struct stat st;
+    if (!f.fp || fstat(fileno(f.fp), &st)) return FillNetworkInfo(out, f.host);
+    const uint64_t t = uint64_t(st.st_mtime) * 10000000ull + 116444736000000000ull;  // FILETIME
+    FillNetworkInfo(out, t, uint64_t(st.st_size), false);
+}
+
+static uint32_t Finish(File& f,''', "files.cpp")
+    files = replace_once(files, '    if (t.read_only) mode = "rb";\n',
+                         '    if (t.read_only || (!std::strcmp(mode, "r+b") && !WantsWrite(a[1]))) mode = "rb";\n', "files.cpp")
+    files = replace_once(files, '        f->fp = std::fopen(host.c_str(), t.read_only ? "rb" : "r+b");',
+                         '        f->fp = std::fopen(host.c_str(), t.read_only || !WantsWrite(a[1]) ? "rb" : "r+b");', "files.cpp")
+    files = replace_once(files, '            else FillNetworkInfo(out, f->host);\n            IoStatus(iosb, kSuccess, 0x38);',
+                         '            else FillHeldNetworkInfo(out, *f);\n            IoStatus(iosb, kSuccess, 0x38);', "files.cpp")
+    # The disk the title sees is no bigger than a retail Xbox's E: partition: titles of the time work out free
+    # space in 32 bits, and an SD card's hundreds of gigabytes wrap around to any value. A host disk that is
+    # nearly full still reads as nearly full.
+    files = replace_once(files, "        capacity = space.capacity / 16384; available = space.available / 16384; free = space.free / 16384;\n",
+                         "        capacity = space.capacity / 16384; available = space.available / 16384; free = space.free / 16384;\n"
+                         "        constexpr uint64_t kXboxUnits = 4882432000ull / 16384;  // E:, in 16 KiB units\n"
+                         "        capacity = std::min(capacity, kXboxUnits);\n"
+                         "        available = std::min(available, capacity);\n"
+                         "        free = std::min(free, capacity);\n"
+                         "        static std::atomic<int> told{0};\n"
+                         "        if (told.fetch_add(1) < 10)\n"
+                         '            LOGR("files: free space for %s: %llu of %llu units of 16 KiB", file->xbox.c_str(),\n'
+                         "                 (unsigned long long)available, (unsigned long long)capacity);\n", "files.cpp")
+    # when the title saves, once for each file it opens and writes
+    files = replace_once(files, "    bool delete_on_close = false;\n    bool backed_up = false;",
+                         "    bool delete_on_close = false;\n    bool backed_up = false;\n    bool save_reported = false;", "files.cpp")
+    files = replace_once(files, '        if (status) { LOGE("save write flush failed: %s (%08X)", f->host.string().c_str(), status); '
+                         'return Finish(*f, status, n, event, apc, apc_ctx, iosb); }\n    }',
+                         '        if (status) { LOGE("save write flush failed: %s (%08X)", f->host.string().c_str(), status); '
+                         'return Finish(*f, status, n, event, apc, apc_ctx, iosb); }\n'
+                         '        if (!f->save_reported) { f->save_reported = true; LOGR("save: writing %s", f->xbox.c_str()); }\n    }',
+                         "files.cpp")
+    files = replace_once(files, "    uint64_t size = f->dir ? 0 : f->entry ? f->entry->size : fs::file_size(f->host, ec);",
+                         "    uint64_t size = f->dir ? 0 : f->entry ? f->entry->size : HeldSize(*f, ec);", "files.cpp")
+    files = replace_once(files, "        size = fs::file_size(f->host, ec);", "        size = HeldSize(*f, ec);", "files.cpp")
+    files = replace_once(files, "                uint64_t size = fs::file_size(f->host, ec);",
+                         "                uint64_t size = HeldSize(*f, ec);", "files.cpp")
+    files = replace_once(files, "                    fs::resize_file(f->host, R64(in), ec);",
+                         "                    HeldResize(*f, R64(in), ec);", "files.cpp")
+    files = replace_once(files, "            fs::rename(f->host, host, ec);", "            HeldRename(*f, host, ec);", "files.cpp")
+    files = "#include <sys/stat.h>\n#include <unistd.h>\n" + files
+    write("files.cpp", '#include "port_compat.h"\n#include <atomic>\n#include <cerrno>\n' + files)
+
+    for name in ("boot.cpp", "xapi.cpp", "dsound.cpp", "vertex.cpp", "shaders.cpp"):
+        write(name, '#include "port_compat.h"\n' + strip_win32_includes((args.adapted / name).read_text(encoding="utf-8")))
+
+    d3d = strip_win32_includes((args.adapted / "d3d8.cpp").read_text(encoding="utf-8"))
+    d3d = replace_once(d3d, "const uint64_t tick=GetTickCount64();", "const uint64_t tick=port::TickMs();", "d3d8.cpp")
+    # the quick menu's cheats and save slots act once per frame, on the title's thread (port/common/cheats.h)
+    d3d = replace_once(d3d, "HLE_STDCALL(D3DDevice_Swap, 1) {\n", "HLE_STDCALL(D3DDevice_Swap, 1) {\n    port::cheats::OnFrame(ctx);\n",
+                       "d3d8.cpp")
+    write("d3d8.cpp", '#include "port_compat.h"\n#include "cheats.h"\n' + d3d)
+
+    # upstream's settings model, with its Win32 file replacement swapped for the port's
+    settings = strip_win32_includes((args.upstream / "src/launcher_settings.cpp").read_text(encoding="utf-8"))
+    settings = replace_once(settings, 'temporary += L"." + std::to_wstring(GetCurrentProcessId()) + L"." + std::to_wstring(GetTickCount64()) + L".tmp";',
+                            'temporary += "." + std::to_string(port::TickMs()) + ".tmp";', "launcher_settings.cpp")
+    settings = replace_once(settings, "if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))",
+                            "if (!port::ReplaceFile(temporary, path))", "launcher_settings.cpp")
+    write("launcher_settings.cpp", '#include "port_compat.h"\n' + settings)
+
+    # the render thread compares draw state with SSE4.1; memcmp gives the same answer on any CPU
+    rt = strip_win32_includes((args.sdk / "runtime/gpu/render_thread.cpp").read_text(encoding="utf-8"))
+    rt = replace_once(rt, "#include <smmintrin.h>\n", "", "render_thread.cpp")
+    begin = rt.index("bool Same(const uint8_t* a, const uint8_t* b, size_t n) {")
+    end = rt.index("\n}\n", begin) + 3
+    rt = rt[:begin] + "bool Same(const uint8_t* a, const uint8_t* b, size_t n) { return !std::memcmp(a, b, n); }\n" + rt[end:]
+    rt = replace_once(rt,
+        '        using SetDescription = HRESULT(WINAPI*)(HANDLE, PCWSTR);\n'
+        '        if (auto set = reinterpret_cast<SetDescription>(\n'
+        '                reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription"))))\n'
+        '            set(GetCurrentThread(), L"render");\n',
+        '        port::OnRenderThread();\n', "render_thread.cpp")
+    write("render_thread.cpp", '#include "port_compat.h"\n' + rt)
+
+    # x86 intrinsics are included but not used past the Windows branch
+    dispatch = (args.sdk / "runtime/cpu/dispatch.cpp").read_text(encoding="utf-8")
+    dispatch = replace_once(dispatch, "#else\n#include <x86intrin.h>\n#endif", "#endif", "dispatch.cpp")
+    write("dispatch.cpp", dispatch)
+
+    # devkitA64's GCC stops on a 1-byte aligned double passed as an argument; read it whole first
+    crt = (args.sdk / "runtime/xdk/crt_math.cpp").read_text(encoding="utf-8")
+    crt = replace_once(crt, "    X87_ST(0) = std::pow(double(X86_MEMF64(ctx.esp + 4)), double(X86_MEMF64(ctx.esp + 12)));",
+                       "    double x, y;\n"
+                       "    std::memcpy(&x, base + ctx.esp + 4, 8);\n"
+                       "    std::memcpy(&y, base + ctx.esp + 12, 8);\n"
+                       "    X87_ST(0) = std::pow(x, y);", "crt_math.cpp")
+    write("crt_math.cpp", "#include <cstring>\n" + crt)
+
+    # Recompiled code nests host frames as deep as the guest's calls. The SDK
+    # reserves 64 MB per thread; on Horizon a thread stack is committed heap.
+    threads = (args.sdk / "runtime/kernel/threads.cpp").read_text(encoding="utf-8")
+    threads = replace_once(threads, "    pthread_attr_setstacksize(&attr, 64u << 20);",
+                           "    pthread_attr_setstacksize(&attr, port::kGuestThreadStack);\n"
+                           "    port::BeforeGuestThread(&attr);", "threads.cpp")
+    threads = replace_once(threads, "    pthread_create(&th, &attr, [](void* p) -> void* {\n",
+                           "    pthread_create(&th, &attr, [](void* p) -> void* {\n        port::OnGuestThread();\n",
+                           "threads.cpp")
+    threads = replace_once(threads, "    pthread_setname_np(pthread_self(), name);", "    port::NameThread(name);", "threads.cpp")
+    write("threads.cpp", '#include "port_compat.h"\n' + threads)
+
+    # A release build logs errors only. The port keeps warnings as well, as hardware runs are its only window
+    # into a run, and lets a crash handler flush what is buffered without taking the lock. Info lines stay out
+    # after boot: the title's input and draw state alone are dozens a second, and SD writes hold up its thread.
+    log = (args.sdk / "runtime/core/log.cpp").read_text(encoding="utf-8")
+    log = replace_once(log, "    if (!kVerbose && lv < Level::Error) return;",
+                       "    // boot's info lines too, before the title's own start them coming by the dozen\n"
+                       "    if (!kVerbose && lv < Level::Warn &&\n"
+                       "        (lv < Level::Info || std::chrono::steady_clock::now() - g_start > std::chrono::seconds(5)))\n"
+                       "        return;", "log.cpp")
+    log = replace_once(log, "void Flush() {", "void FlushUnlocked() {\n    if (g_file) std::fflush(g_file);\n}\n\nvoid Flush() {", "log.cpp")
+    write("log.cpp", log)
+
+    # Guest memory: the 4 GB window and the two aliased views of physical RAM
+    memory = (args.sdk / "runtime/kernel/memory.cpp").read_text(encoding="utf-8")
+    memory = replace_once(memory, "#else\n#include <sys/mman.h>\n#endif",
+                          "#elif defined(__SWITCH__)\n#include \"nx/guest_memory.h\"\n#else\n#include <sys/mman.h>\n#endif",
+                          "memory.cpp")
+    memory = replace_once(memory, "#else\n    void* p = mmap(reinterpret_cast<void*>(0x100000000ull)",
+                          "#elif defined(__SWITCH__)\n"
+                          "    g_base = nx::gm::Init(size, kContiguousBase, kWriteCombineBase, kPhysicalSize);\n"
+                          "#else\n    void* p = mmap(reinterpret_cast<void*>(0x100000000ull)", "memory.cpp")
+    memory = replace_once(memory, "#else\n    if (mprotect(g_base + first, size_t(end - first), PROT_READ | PROT_WRITE)) {",
+                          "#elif defined(__SWITCH__)\n"
+                          "    if (!nx::gm::Commit(first, size_t(end - first))) {\n"
+                          "        LOGE(\"memory: commit %08X+%X failed\", first, uint32_t(end - first));\n"
+                          "        return false;\n    }\n"
+                          "#else\n    if (mprotect(g_base + first, size_t(end - first), PROT_READ | PROT_WRITE)) {",
+                          "memory.cpp")
+    memory = replace_once(memory, "#else\n    madvise(g_base + first, size_t(end - first), MADV_DONTNEED);",
+                          "#elif defined(__SWITCH__)\n"
+                          "    nx::gm::Decommit(first, size_t(end - first));\n"
+                          "#else\n    madvise(g_base + first, size_t(end - first), MADV_DONTNEED);", "memory.cpp")
+    write("memory.cpp", memory)
+
+
+if __name__ == "__main__":
+    main()
