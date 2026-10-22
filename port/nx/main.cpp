@@ -16,11 +16,13 @@
 #include "nx/guest_memory.h"
 #include "nx/platform.h"
 #include "runtime_paths.h"
+#include "thorhax_intro.h"
 
 namespace {
 
 // a message on the console until the player presses +
 [[noreturn]] void Fatal(const char* text) {
+    while (nx::OutputHeld()) svcSleepThread(10'000'000);  // the window is the intro's until it ends
     consoleInit(nullptr);
     std::printf("\n  Shaolin Monks NX\n\n  %s\n\n  Log: %s\n\n  Press + to exit.\n", text, logx::Path().c_str());
     consoleUpdate(nullptr);
@@ -73,6 +75,8 @@ int main(int, char**) {
     if (!app::FindGame(game))
         Fatal("Copy your USA/Europe Xbox disc image (.iso) to /switch/shaolinmonks/,\n  "
               "or the extracted game files to /switch/shaolinmonks/game/.");
+    // the intro plays on its own threads while the game boots behind it
+    thorhax::intro::Start();
     LOGR("boot: input");
     input::Init();
     if (app::kGame.window) app::kGame.window(app::Window());

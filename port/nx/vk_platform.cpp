@@ -38,6 +38,7 @@ public:
         if (r != VK_SUCCESS) LOGE("vulkan: no surface on the window (%d)", int(r));
         return surface;
     }
+    bool SurfaceHeld() override { return nx::OutputHeld(); }
     // 720p in both modes: the console scales it to the TV docked
     void OutputSize(uint32_t& w, uint32_t& h) override {
         w = 1280;

@@ -673,6 +673,7 @@ private:
     void CreateFixedImages();
     // Present, in call order
     void ResizeSwap();
+    void AttachSurface();
     void UploadGammaRamp();
     void DrawFrame(Target* t, Image& out, uint32_t w, uint32_t h);
     void ReleaseOldTextures();
@@ -739,6 +740,7 @@ private:
     PFN_vkCmdBindVertexBuffers2 bind_vertex_buffers2_ = nullptr;
     // presentation: a swap chain, or an image drawn offscreen
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
+    bool surface_later_ = false;  // the platform holds the window for now: offscreen until it gives it
     VkSwapchainKHR swap_ = VK_NULL_HANDLE;
     std::vector<Image> swap_images_;
     std::vector<VkSemaphore> rendered_;  // per swap chain image
@@ -832,9 +834,12 @@ bool VulkanBackend::Init(uint32_t width, uint32_t height) {
     if (!CreateInstance() || !CreateDevice() || !CreateLayouts()) return false;
     alloc_.Init(dev_, pd_);
     CreateFrames();
-    surface_ = platform_.CreateSurface(instance_);
+    surface_later_ = platform_.SurfaceHeld();
+    if (!surface_later_) surface_ = platform_.CreateSurface(instance_);
     if (!CreateSwapchain()) return false;
-    vkr::overlay::Init({instance_, pd_, dev_, qfam_, queue_, uint32_t(std::max<size_t>(2, swap_images_.size()))});
+    // a swap chain made later has up to as many images as frames in flight
+    vkr::overlay::Init({instance_, pd_, dev_, qfam_, queue_,
+                        uint32_t(surface_later_ ? kFrames : std::max<size_t>(2, swap_images_.size()))});
     Begin();
     CreateFixedImages();
     scale_ = app::RenderScale(guest_h_);
@@ -3098,6 +3103,23 @@ void VulkanBackend::ResizeSwap() {
     CreateSwapchain();
 }
 
+// the platform has given the window back: from now on the frames go to a swap chain on it
+void VulkanBackend::AttachSurface() {
+    surface_later_ = false;
+    Flush();
+    vkDeviceWaitIdle(dev_);
+    Release(offscreen_);
+    Flush();
+    surface_ = platform_.CreateSurface(instance_);
+    if (surface_ && !CreateSwapchain()) {
+        LOGE("vulkan: no swap chain on the window, drawing offscreen");
+        vkDestroySurfaceKHR(instance_, surface_, nullptr);
+        surface_ = VK_NULL_HANDLE;
+    }
+    if (!surface_) CreateSwapchain();
+    LOGR("vulkan: the window is the renderer's from frame %llu", (unsigned long long)presents_);
+}
+
 // ramp_ holds the red, green and blue ramps, 256 entries each
 void VulkanBackend::UploadGammaRamp() {
     ramp_dirty_ = false;
@@ -3204,6 +3226,7 @@ void LogPerf() {
 
 void VulkanBackend::Present(const Surface& front) {
     PerfScope perf_present{g_perf.present};
+    if (surface_later_ && !platform_.SurfaceHeld()) AttachSurface();
     ResizeSwap();
     const bool known = FindTarget(front, false) != nullptr;
     Target* t = EnsureTarget(front, false);

@@ -25,6 +25,9 @@ NWindow* Window();
 // frames the renderer has presented so far
 uint64_t PresentedFrames();
 
+// while the intro plays: the window and audout are its own, the game runs unseen, unheard and with untouched pads
+bool OutputHeld();
+
 // CPU exceptions write logs/crash.log from here on
 void InstallCrashLog();
 

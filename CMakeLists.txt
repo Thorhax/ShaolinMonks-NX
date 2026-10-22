@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(ShaolinMonksNX VERSION 0.2.0 LANGUAGES C CXX)
+project(ShaolinMonksNX VERSION 0.2.1 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -135,6 +135,10 @@ if(PORT_PLATFORM STREQUAL "switch")
         "${UPSTREAM}/src" "${SDK}/runtime" "${GEN}" "${SDK}/harness/compat")
     target_compile_definitions(shaolin_nx PRIVATE PORT_VERSION="${PROJECT_VERSION}" XBE_RAW_VERTICES=0 XBE_RENDER_THREAD=$<BOOL:${NX_RENDER_THREAD}> ENABLE_HLSL=1)
     target_include_directories(shaolin_nx SYSTEM PRIVATE "${NVK_SDK}/include")
+    # the Thorhax intro, the startup video; port/nx/compat gives it the log macros it is written with
+    include("${CMAKE_CURRENT_SOURCE_DIR}/port/thorhax_intro/thorhax_intro.cmake")
+    thorhax_intro_add(shaolin_nx)
+    target_include_directories(shaolin_nx PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/port/nx/compat")
     target_compile_options(shaolin_nx PRIVATE -fno-strict-aliasing -O2 -g -Wno-psabi)
     target_link_options(shaolin_nx PRIVATE "-Wl,-Map,${CMAKE_CURRENT_BINARY_DIR}/shaolin_nx.map")
     # NVK by full path (an older generic libvulkan.a may sit in portlibs). The SDK's archive index leaves out its

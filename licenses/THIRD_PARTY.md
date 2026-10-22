@@ -16,6 +16,7 @@ their parts; full texts are in this folder where the project ships one.
 | [Lua](https://www.lua.org) 5.4.9 | mod routines | MIT ([Lua-MIT.txt](Lua-MIT.txt)) |
 | [miniz](https://github.com/richgel999/miniz) | reading mod and language pack archives | MIT ([miniz-MIT.txt](miniz-MIT.txt)) |
 | [XZ Embedded](https://github.com/tukaani-project/xz-embedded) | unpacking compressed mods | 0BSD ([xz-embedded-0BSD.txt](xz-embedded-0BSD.txt)) |
+| [pl_mpeg](https://github.com/phoboslab/pl_mpeg) by Dominic Szablewski (commit `c871f2b`) | MPEG-1 video decoding, unmodified in `port/thorhax_intro/pl_mpeg.h` | MIT (in the file) |
 | [Zydis](https://github.com/zyantific/zydis) 4.1.1 | the recompiler, on the build machine only | MIT |
 
 `port/vk/bc_decode.*` is ShaolinMonksRecomp's BC decoder, unchanged apart from its include path.

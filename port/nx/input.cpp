@@ -11,6 +11,7 @@
 #include "app/app.h"
 #include "cheats.h"
 #include "launcher.h"
+#include "nx/platform.h"
 #include "quick_menu.h"
 
 namespace input {
@@ -69,6 +70,11 @@ void Init() {
 Pad Poll(int port) {
     Pad p;
     if (port < 0 || port >= kPorts) return p;
+    // the intro's: player 1 stays connected and untouched
+    if (nx::OutputHeld()) {
+        p.connected = port == 0;
+        return p;
+    }
     {
         std::lock_guard<std::mutex> lock(g_lock);
         PadState& s = g_pads[port];

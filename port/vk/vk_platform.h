@@ -14,6 +14,9 @@ public:
     virtual std::vector<const char*> InstanceExtensions() = 0;
     // the window's surface; VK_NULL_HANDLE draws offscreen and hands frames to Offscreen instead
     virtual VkSurfaceKHR CreateSurface(VkInstance instance) = 0;
+    // while true, the window is someone else's (the Switch's startup video): frames are drawn offscreen, and the
+    // surface is made once it turns false
+    virtual bool SurfaceHeld() { return false; }
     // the size the output should have now; a change remakes the swap chain
     virtual void OutputSize(uint32_t& w, uint32_t& h) = 0;
     // after each present, counted from 0

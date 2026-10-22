@@ -8,6 +8,7 @@
 #include "core/log.h"
 #include "gpu/backend.h"
 #include "nx/guest_memory.h"
+#include "nx/platform.h"
 
 namespace gpu {
 namespace {
@@ -15,6 +16,7 @@ namespace {
 class StatusBackend final : public Backend {
 public:
     bool Init(uint32_t w, uint32_t h) override {
+        while (nx::OutputHeld()) svcSleepThread(10'000'000);  // the window is the intro's until it ends
         consoleInit(nullptr);
         std::printf("\x1b[2J\n  Shaolin Monks NX: bring-up build, no graphics yet\n  Title back buffer %ux%u\n", w, h);
         consoleUpdate(nullptr);
