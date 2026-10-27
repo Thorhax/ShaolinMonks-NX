@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(ShaolinMonksNX VERSION 0.3.0 LANGUAGES C CXX)
+project(ShaolinMonksNX VERSION 0.3.1 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -52,7 +52,8 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/upstream_mods.cmake")
 
 # the recompiled game; each function reaches mod routines through upstream's bridge
-set(ROUTINE_BRIDGE "${UPSTREAM}/src/mods/routine_bridge.h")
+# the port's copy of upstream's bridge (port/common/routine_bridge.h): the same routing, a cheaper check per call
+set(ROUTINE_BRIDGE "${CMAKE_CURRENT_SOURCE_DIR}/port/common/routine_bridge.h")
 file(GLOB GEN_SOURCES "${GEN}/x86_recomp.*.cpp")
 list(APPEND GEN_SOURCES "${GEN}/x86_func_mapping.cpp" "${GEN}/xbe_sha1.cpp")
 if(PORT_PLATFORM STREQUAL "switch")
@@ -62,7 +63,7 @@ if(PORT_PLATFORM STREQUAL "switch")
         get_filename_component(name "${src}" NAME)
         string(REGEX REPLACE "\\.cpp$" ".o" name "${name}")
         set(obj "${CMAKE_CURRENT_BINARY_DIR}/game/${name}")
-        add_custom_command(OUTPUT "${obj}" DEPENDS "${src}" "${ROUTINE_BRIDGE}"
+        add_custom_command(OUTPUT "${obj}" DEPENDS "${src}" "${ROUTINE_BRIDGE}" "${UPSTREAM}/src/mods/routine_bridge.h"
             COMMAND "${NX_GAME_CLANG}" -std=c++20 ${NX_GAME_CLANG_FLAGS} ${GENERATED_OPT} -g0 -fno-strict-aliasing -w
                     -I "${SDK}/runtime" -I "${GEN}" -include "${ROUTINE_BRIDGE}" -c "${src}" -o "${obj}"
             COMMENT "game code ${name}" VERBATIM)

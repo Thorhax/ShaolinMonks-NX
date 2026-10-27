@@ -76,9 +76,7 @@ inline void Applied(size_t off, size_t n) {
     if (off < vsc + sizeof(gpu::State::vsc) && off + n > vsc) g_vsc_changes++;
 }
 
-inline bool Check() {
-    static const bool on = std::getenv("XBE_STATECHECK") != nullptr;
-    return on;
-}
+inline const bool g_check = std::getenv("XBE_STATECHECK") != nullptr;
+inline bool Check() { return g_check; }
 
 }  // namespace port::state

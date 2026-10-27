@@ -458,13 +458,17 @@ const FormatInfo& Format(uint32_t f) {
     d3d = replace_once(d3d, """    for (uint32_t i = gpu::kRsDeferredFirst; i < gpu::kRsComplexFirst; i++) g_state.rs[i] = R32(kRenderState + i * 4);
     for (int s = 0; s < 4; s++)
         for (uint32_t i = 0; i < gpu::kTssBumpEnvMat00; i++) g_state.tss[s][i] = R32(kTextureState + (s * kStageStates + i) * 4);
-""", """    for (uint32_t i = gpu::kRsDeferredFirst; i < gpu::kRsComplexFirst; i++) {
+""", """    // whole blocks compared first: on most draws nothing changed
+    constexpr uint32_t kDeferred = gpu::kRsComplexFirst - gpu::kRsDeferredFirst;
+    if (std::memcmp(&g_state.rs[gpu::kRsDeferredFirst], HostPtr(kRenderState + gpu::kRsDeferredFirst * 4), kDeferred * 4))
+    for (uint32_t i = gpu::kRsDeferredFirst; i < gpu::kRsComplexFirst; i++) {
         const uint32_t v = R32(kRenderState + i * 4);
         if (g_state.rs[i] == v) continue;
         g_state.rs[i] = v;
         port::state::Mark(g_state, g_state.rs[i]);
     }
     for (int s = 0; s < 4; s++)
+        if (std::memcmp(g_state.tss[s].data(), HostPtr(kTextureState + s * kStageStates * 4), gpu::kTssBumpEnvMat00 * 4))
         for (uint32_t i = 0; i < gpu::kTssBumpEnvMat00; i++) {
             const uint32_t v = R32(kTextureState + (s * kStageStates + i) * 4);
             if (g_state.tss[s][i] == v) continue;
@@ -510,24 +514,46 @@ const FormatInfo& Format(uint32_t f) {
         "#endif\n"
         "}\n") + rt[end:]
     rt = replace_once(rt,
+        "        for (const Range& r : ranges_)\n"
         "            for (size_t off = r.off, end = r.off + r.len; off < end; off += 64)\n"
         "                Delta(reinterpret_cast<const uint8_t*>(&sent_) + off, now + off, std::min<size_t>(64, end - off));\n",
-        "            for (size_t off = r.off, end = r.off + r.len; off < end; off += 64) {\n"
-        "                if (!port::state::Check()) {\n"
-        "                    // past whole unmarked words at once, to the piece holding the next mark\n"
-        "                    const size_t next = port::state::NextMarkedWord(off);\n"
-        "                    if (next >= end) break;\n"
-        "                    if (next > off) off = r.off + (next - r.off) / 64 * 64;\n"
-        "                }\n"
-        "                const size_t n = std::min<size_t>(64, end - off);\n"
-        "                if (port::state::Marked(off, n)) {\n"
-        "                    Delta(reinterpret_cast<const uint8_t*>(&sent_) + off, now + off, n);\n"
-        "                } else if (port::state::Check() && !Same(reinterpret_cast<const uint8_t*>(&sent_) + off, now + off, n)) {\n"
-        "                    LOG_FIRST(16, \"state check: bytes %zu to %zu changed unmarked\", off, off + n);\n"
-        "                    Delta(reinterpret_cast<const uint8_t*>(&sent_) + off, now + off, n);\n"
-        "                }\n"
-        "            }\n"
-        "        port::state::Sent();\n", "render_thread.cpp")
+        r"""        for (const Range& r : ranges_) {
+            const size_t end = r.off + r.len;
+            // only the range's 64 byte steps that overlap a marked piece, found a word of marks at a time
+            const size_t first = r.off >> 6, last = (end - 1) >> 6;
+            size_t done = r.off;  // the range is sent up to here
+            for (size_t w = first >> 6; w <= last >> 6; w++) {
+                uint64_t bits = port::state::g_dirty[w];
+                if (w == first >> 6) bits &= ~0ull << (first & 63);
+                if (w == last >> 6 && (last & 63) != 63) bits &= (2ull << (last & 63)) - 1;
+                while (bits) {
+                    const size_t piece = w << 6 | size_t(__builtin_ctzll(bits));
+                    bits &= bits - 1;
+                    const size_t from = std::max(piece << 6, r.off), to = std::min((piece + 1) << 6, end);
+                    for (size_t off = std::max(done, r.off + (from - r.off) / 64 * 64); off < to; off += 64) {
+                        Delta(reinterpret_cast<const uint8_t*>(&sent_) + off, now + off, std::min<size_t>(64, end - off));
+                        done = off + 64;
+                    }
+                }
+            }
+        }
+        // XBE_STATECHECK: after that, whatever still differs was written unmarked (or skipped by the walk above)
+        if (port::state::Check())
+            for (const Range& r : ranges_)
+                for (size_t off = r.off, end = r.off + r.len; off < end; off += 64) {
+                    const size_t n = std::min<size_t>(64, end - off);
+                    if (Same(reinterpret_cast<const uint8_t*>(&sent_) + off, now + off, n)) continue;
+                    LOG_FIRST(16, "state check: bytes %zu to %zu changed unmarked", off, off + n);
+                    Delta(reinterpret_cast<const uint8_t*>(&sent_) + off, now + off, n);
+                }
+        port::state::Sent();
+""", "render_thread.cpp")
+    # the header and use lookups' caches, in front of their hash maps: 256 entries, a draw's resources missed 64
+    for kind in ("headers", "uses"):
+        rt = replace_once(rt, f"recent_{kind}_[(header >> 3) & 63]", f"recent_{kind}_[(header >> 3) & 255]", "render_thread.cpp")
+    rt = replace_once(rt, "    std::array<Recent<HeaderCopy>, 64> recent_headers_{};\n    std::array<Recent<uint64_t>, 64> recent_uses_{};\n",
+                      "    std::array<Recent<HeaderCopy>, 256> recent_headers_{};\n    std::array<Recent<uint64_t>, 256> recent_uses_{};\n",
+                      "render_thread.cpp")
     rt = replace_once(rt, "                    std::memcpy(s + head[0], p + 8, head[1]);\n",
                       "                    std::memcpy(s + head[0], p + 8, head[1]);\n"
                       "                    port::state::Applied(head[0], head[1]);\n", "render_thread.cpp")
