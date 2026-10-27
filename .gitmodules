@@ -1,6 +1,6 @@
 [submodule "third_party/ShaolinMonksRecomp"]
 	path = third_party/ShaolinMonksRecomp
-	url = https://github.com/OAleex/ShaolinMonksRecomp.git
+	url = https://github.com/OAleex/OpenShao.git
 [submodule "third_party/XboxXBERecomp"]
 	path = third_party/XboxXBERecomp
 	url = https://github.com/TGP482/XboxXBERecomp.git

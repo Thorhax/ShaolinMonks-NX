@@ -57,19 +57,19 @@ bool Matches(const fs::path& where, const std::vector<uint8_t>& xbe) {
 // a file of the extracted game by its disc path, matched without regard to case as the disc does
 fs::path OriginalPath(const fs::path& root, std::string name) {
     std::replace(name.begin(), name.end(), '\\', '/');
-    if (!shaolin::files::SafeRelative(name)) return {};
+    if (!openshao::files::SafeRelative(name)) return {};
     const auto lower = [](std::string v) {
         for (auto& c : v) c = char(std::tolower(static_cast<unsigned char>(c)));
         return v;
     };
     std::error_code ec;
     fs::path path = root;
-    for (const auto& part : shaolin::files::FromUtf8(name)) {
+    for (const auto& part : openshao::files::FromUtf8(name)) {
         fs::path next = path / part;
         if (!fs::exists(next, ec)) {
-            const std::string key = lower(shaolin::files::Utf8(part));
+            const std::string key = lower(openshao::files::Utf8(part));
             for (auto it = fs::directory_iterator(path, ec); !ec && it != fs::directory_iterator(); it.increment(ec))
-                if (lower(shaolin::files::Utf8(it->path().filename())) == key) {
+                if (lower(openshao::files::Utf8(it->path().filename())) == key) {
                     next = it->path();
                     break;
                 }
@@ -81,14 +81,15 @@ fs::path OriginalPath(const fs::path& root, std::string name) {
 }
 
 // upstream's language packs and mod routines (game_files.cpp there): the enabled mods in the mods folder, and
-// a pack for the chosen language when it is not one of the disc's five
+// a pack for the chosen language when it is not one of the disc's five; the voices can come from another language's
 bool MountLanguage(const fs::path& folder, const GameFiles& game, std::string& error) {
-    using namespace shaolin;
+    using namespace openshao;
     language::Disable();
     mods::StageRoutines({});
     try {
         const std::string selected = launcher::Current().language;
-        std::vector<fs::path> packs;
+        const std::string voices = launcher::Current().voice_language;
+        std::vector<language::PackSelection> packs;
         std::vector<mods::RoutineScript> scripts;
         bool credits = false;
         mods::Recover(paths::Mods());
@@ -99,7 +100,7 @@ bool MountLanguage(const fs::path& folder, const GameFiles& game, std::string& e
             const auto pack = paths::Mods() / files::FromUtf8(row.mod.install_dir);
             if (!files::Within(pack, paths::Mods()) || !fs::is_directory(pack))
                 throw std::runtime_error("Installed mod folder is missing: " + row.mod.name);
-            packs.push_back(pack);
+            packs.push_back({pack, true, row.mod.type != "language" || mods::SameLanguage(selected, voices)});
             if (row.mod.type == "language") {
                 language_ready = true;
                 credits = selected == "pt-BR";
@@ -115,6 +116,20 @@ bool MountLanguage(const fs::path& folder, const GameFiles& game, std::string& e
         if (!language_ready)
             throw std::runtime_error("No language pack for '" + selected + "' in " + paths::Mods().string() +
                                      "; install one there or set another language in settings.toml.");
+        if (!mods::SameLanguage(selected, voices) && !mods::IsOriginalLanguage(voices)) {
+            bool voice_ready = false;
+            for (const auto& row : mods::ActiveMods(paths::Mods(), voices))
+                if (row.mod.type == "language") {
+                    const auto pack = paths::Mods() / files::FromUtf8(row.mod.install_dir);
+                    if (!files::Within(pack, paths::Mods()) || !fs::is_directory(pack))
+                        throw std::runtime_error("Installed voice language pack is missing: " + row.mod.name);
+                    packs.push_back({pack, false, true});
+                    voice_ready = true;
+                }
+            if (!voice_ready)
+                throw std::runtime_error("No language pack for the voices '" + voices + "' in " + paths::Mods().string() +
+                                         "; install one there or set another voice_language in settings.toml.");
+        }
         if (packs.empty()) return true;
         const auto* disc = kernel::MountedDisc();
         struct Readers {
@@ -153,6 +168,7 @@ bool MountLanguage(const fs::path& folder, const GameFiles& game, std::string& e
         if (!language::MountPacks(packs, game.xbe, read, size, credits, error)) return false;
         mods::StageRoutines(std::move(scripts));
         const auto& stats = language::Statistics();
+        LOGR("Language resources: text=%s voices=%s", selected.c_str(), voices.c_str());
         LOGR("Mods ready: packs=%zu resources=%u voices=%u occurrences=%u movies=%u", packs.size(), stats.archive.resources,
              stats.archive.voice_names, stats.archive.voice_occurrences, stats.movies);
         return true;
@@ -202,7 +218,7 @@ bool FindGame(GameFiles& game) {
         if (!disc->Load(IMAGE_XBE, xbe) || !Matches(iso, xbe)) continue;
         kernel::MountDisc(std::move(disc));
         // the disc is D:, the folder is only scratch space for the title's writes to its own drive
-        game = {shaolin::paths::Cache() / "dvd-scratch", std::move(xbe)};
+        game = {openshao::paths::Cache() / "dvd-scratch", std::move(xbe)};
         fs::create_directories(game.dir, ec);
         return Mounted({}, game);
     }

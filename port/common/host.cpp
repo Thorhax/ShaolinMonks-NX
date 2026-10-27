@@ -1,6 +1,6 @@
 // The options upstream reads from the command line; this host runs with the defaults
 #include "host.h"
 
-namespace shaolin {
+namespace openshao {
 Options options;
 }

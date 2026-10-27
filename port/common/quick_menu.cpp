@@ -14,6 +14,8 @@
 
 #include "cheats.h"
 #include "imgui.h"
+#include "launcher.h"
+#include "launcher_extra.h"
 
 namespace port::menu {
 namespace {
@@ -21,9 +23,10 @@ namespace {
 enum class Page { Main, Cheats };
 
 constexpr uint32_t kChord = kMinus | kPlus;
-constexpr int kMainItems = 4;
+constexpr int kMainItems = 5;
 constexpr int kMainShowFps = 2;
 constexpr int kMainIcons = 3;
+constexpr int kMainBloom = 4;
 
 std::mutex g_lock;
 bool g_visible = false;
@@ -75,6 +78,10 @@ void Activate() {
                     SetSwitchIcons(!g_switch_icons);
                     if (g_save) g_save();
                     break;
+                case kMainBloom:
+                    openshao::launcher::SetBloomEffect(!openshao::launcher::Current().bloom_effect);
+                    if (g_save) g_save();
+                    break;
             }
             break;
         case Page::Cheats:
@@ -102,6 +109,8 @@ void MainPage(float row) {
     Row("Cheats                                           >", 1, row);
     Row(std::string("Show FPS                           <  ") + (g_show_fps ? "Enabled" : "Disabled") + "  >", kMainShowFps, row);
     Row(std::string("Button icons                       <  ") + (g_switch_icons ? "Switch" : "Xbox") + "  >", kMainIcons, row);
+    Row(std::string("Bloom effect                       <  ") + (openshao::launcher::Current().bloom_effect ? "Enabled" : "Disabled") +
+            "  >", kMainBloom, row);
     ImGui::Separator();
     CenteredText("D-Pad  Navigate     A  Select     B  Close     Minus + Plus  Toggle");
 }
@@ -142,7 +151,8 @@ void UpdateInput(uint32_t down, uint32_t held) {
     if (down & kUp) g_selection = (g_selection + count - 1) % count;
     else if (down & kDown) g_selection = (g_selection + 1) % count;
     // left and right flip a setting in place, as on NaGa's menu
-    if ((down & (kLeft | kRight)) && ((g_page == Page::Main && (g_selection == kMainShowFps || g_selection == kMainIcons)) ||
+    if ((down & (kLeft | kRight)) && ((g_page == Page::Main && (g_selection == kMainShowFps || g_selection == kMainIcons ||
+                                                                 g_selection == kMainBloom)) ||
                                       (g_page == Page::Cheats && g_selection <= cheats::kCount))) {
         Activate();
         return;

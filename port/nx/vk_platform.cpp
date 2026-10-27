@@ -44,7 +44,10 @@ public:
         w = 1280;
         h = 720;
     }
-    void Presented(uint64_t) override { g_presented.fetch_add(1, std::memory_order_relaxed); }
+    void Presented(uint64_t) override {
+        g_presented.fetch_add(1, std::memory_order_relaxed);
+        nx::perf::Presented();
+    }
     std::filesystem::path CacheDir() override { return app::ExeDir() / "cache"; }
 };
 

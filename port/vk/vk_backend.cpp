@@ -27,6 +27,10 @@
 #include <unordered_set>
 #include <vector>
 
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
 #include <dxgiformat.h>
 
 #include "app/app.h"
@@ -38,8 +42,11 @@
 #include "gpu/vertex.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
+#include "bloom_effect_runtime.h"
+#include "launcher.h"
 #include "raster_compat.h"
 #include "sfd_filter_compat.h"
+#include "state_dirty.h"
 #include "vk/vk_platform.h"
 #include "vk/bc_decode.h"
 #include "vk/button_icons.h"
@@ -78,14 +85,32 @@ double PerfMs(PerfClock::time_point t) { return std::chrono::duration<double, st
 struct Perf {
     double draw = 0, assemble = 0, bind = 0, sig = 0, texup = 0, compile = 0, clear = 0, copy = 0, present = 0, wait = 0,
            swap = 0, sync = 0;
+    double steps[8] = {};  // a draw's steps after assembly, see kDrawSteps
+    uint64_t vc_kept = 0, dc_kept = 0, push_kept = 0;
     uint64_t draws = 0, verts = 0, upload = 0, overflow = 0, sigs = 0, sig_bytes = 0, texups = 0, texup_bytes = 0,
              newtex = 0, targets = 0, rtups = 0, shrinks = 0, syncs = 0, psos = 0, shaders = 0, raw = 0, lates = 0;
 };
 Perf g_perf;
+// the clock is read only while the perf lines are on: a draw has several of these
 struct PerfScope {
     double& acc;
-    PerfClock::time_point t = PerfClock::now();
-    ~PerfScope() { acc += PerfMs(t); }
+    bool on = diag::Perf();
+    PerfClock::time_point t = on ? PerfClock::now() : PerfClock::time_point{};
+    ~PerfScope() {
+        if (on) acc += PerfMs(t);
+    }
+};
+// XBE_PERF: a draw's time step by step, each step from the end of the one before
+const char* const kDrawSteps[8] = {"targets", "shaders", "textures", "pipeline", "constants", "bindings", "state", "geometry"};
+struct PerfSteps {
+    bool on = diag::Perf();
+    PerfClock::time_point t = on ? PerfClock::now() : PerfClock::time_point{};
+    void Lap(int step) {
+        if (!on) return;
+        auto now = PerfClock::now();
+        g_perf.steps[step] += std::chrono::duration<double, std::milli>(now - t).count();
+        t = now;
+    }
 };
 
 const char* kBlitHlsl = R"(
@@ -258,12 +283,80 @@ constexpr uint32_t kSigWholeMax = 65536;
 constexpr uint32_t kSigSamples = 64;
 constexpr uint32_t kSigSampleBytes = 64;
 
+// Bytes' signature for MemSig, which only tells whether a surface's bytes changed since the last look. The same bytes
+// as Hash, read four times as fast on the Switch: Hash's 128 bit multiplies form one chain, here 32 independent
+// polynomial chains (each 32 bit word of a 64 byte block, under two odd multipliers) run side by side, four to a NEON
+// register. Any one changed word changes its chains (an odd multiplier is invertible modulo 2^32); the chains end in
+// Hash. SignatureScalar is the same arithmetic a word at a time.
+constexpr uint32_t kSigMulA = 0x01000193u, kSigMulB = 0x2545F491u;
+
+uint64_t SignatureScalar(const uint8_t* p, size_t n, uint64_t seed) {
+    if (n >= 64) {
+        uint32_t lanes[32];
+        for (int j = 0; j < 16; j++) {
+            lanes[j] = (j / 4) % 2 ? uint32_t(seed >> 32) : uint32_t(seed);
+            lanes[16 + j] = 0x9E3779B9u;
+        }
+        size_t i = 0;
+        for (; i + 64 <= n; i += 64)
+            for (int j = 0; j < 16; j++) {
+                uint32_t d;
+                std::memcpy(&d, p + i + j * 4, 4);
+                lanes[j] = d + lanes[j] * kSigMulA;
+                lanes[16 + j] = d + lanes[16 + j] * kSigMulB;
+            }
+        seed = Hash(lanes, sizeof(lanes), seed);
+        p += i;
+        n -= i;
+    }
+    return n ? Hash(p, n, seed) : seed;
+}
+
+uint64_t Signature(const uint8_t* p, size_t n, uint64_t seed) {
+#if defined(__aarch64__)
+    if (n >= 64) {
+        uint32x4_t a0 = vdupq_n_u32(uint32_t(seed)), a1 = vdupq_n_u32(uint32_t(seed >> 32)), a2 = a0, a3 = a1;
+        uint32x4_t b0 = vdupq_n_u32(0x9E3779B9u), b1 = b0, b2 = b0, b3 = b0;
+        size_t i = 0;
+        for (; i + 64 <= n; i += 64) {
+            const uint32x4_t d0 = vreinterpretq_u32_u8(vld1q_u8(p + i));
+            const uint32x4_t d1 = vreinterpretq_u32_u8(vld1q_u8(p + i + 16));
+            const uint32x4_t d2 = vreinterpretq_u32_u8(vld1q_u8(p + i + 32));
+            const uint32x4_t d3 = vreinterpretq_u32_u8(vld1q_u8(p + i + 48));
+            a0 = vmlaq_n_u32(d0, a0, kSigMulA);
+            a1 = vmlaq_n_u32(d1, a1, kSigMulA);
+            a2 = vmlaq_n_u32(d2, a2, kSigMulA);
+            a3 = vmlaq_n_u32(d3, a3, kSigMulA);
+            b0 = vmlaq_n_u32(d0, b0, kSigMulB);
+            b1 = vmlaq_n_u32(d1, b1, kSigMulB);
+            b2 = vmlaq_n_u32(d2, b2, kSigMulB);
+            b3 = vmlaq_n_u32(d3, b3, kSigMulB);
+        }
+        uint32_t lanes[32];
+        vst1q_u32(lanes, a0);
+        vst1q_u32(lanes + 4, a1);
+        vst1q_u32(lanes + 8, a2);
+        vst1q_u32(lanes + 12, a3);
+        vst1q_u32(lanes + 16, b0);
+        vst1q_u32(lanes + 20, b1);
+        vst1q_u32(lanes + 24, b2);
+        vst1q_u32(lanes + 28, b3);
+        seed = Hash(lanes, sizeof(lanes), seed);
+        p += i;
+        n -= i;
+    }
+    return n ? Hash(p, n, seed) : seed;
+#else
+    return SignatureScalar(p, n, seed);
+#endif
+}
+
 uint64_t MemSig(uint32_t data, uint32_t total) {
     const uint8_t* p = static_cast<const uint8_t*>(kernel::HostPtr(data));
     uint64_t sig = Hash(&total, sizeof(total));
     g_perf.sigs++;
     g_perf.sig_bytes += total <= kSigWholeMax ? total : kSigSamples * kSigSampleBytes;
-    if (total <= kSigWholeMax) return Hash(p, total, sig);
+    if (total <= kSigWholeMax) return Signature(p, total, sig);
     for (uint32_t i = 0; i < kSigSamples; i++) {
         const uint8_t* sample = p + uint64_t(total - kSigSampleBytes) * i / (kSigSamples - 1);
         sig = Hash(sample, kSigSampleBytes, sig);
@@ -781,6 +874,18 @@ private:
     Target* draw_rt_ = nullptr;  // the draw's targets, the bound ones go when a texture's copy is drawn
     Target* draw_ds_ = nullptr;
     VkPipeline bound_pso_ = VK_NULL_HANDLE;
+    // the constants and bindings of the command buffer's last draw: a draw with the same ones uploads and pushes nothing
+    struct Kept {
+        bool valid = false;
+        Alloc at{};
+    };
+    Kept kept_vc_, kept_dc_;
+    std::array<std::array<float, 4>, 192> kept_vsc_{};
+    uint64_t kept_vsc_changes_ = 0;
+    DrawConstants kept_c_{};
+    bool pushed_valid_ = false;
+    Bindings pushed_{};
+    void ForgetKept() { kept_vc_.valid = kept_dc_.valid = pushed_valid_ = false; }
     uint32_t guest_w_ = 640;
     uint32_t guest_h_ = 480;
     float scale_ = 1.0f;
@@ -1400,6 +1505,7 @@ void VulkanBackend::Begin() {
     rendering_ = false;
     act_rt_ = act_ds_ = nullptr;
     bound_pso_ = VK_NULL_HANDLE;
+    ForgetKept();
 }
 
 void VulkanBackend::Submit(bool wait, VkSemaphore wait_sem, VkSemaphore signal_sem) {
@@ -1675,7 +1781,7 @@ VkPipeline VulkanBackend::EnsurePipeline(const PsoKey& k, VkShaderModule vs, VkS
         p.rs.cullMode = VK_CULL_MODE_NONE;
         p.rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
     }
-    if (k.atlas_guard) gs = Module(shaolin::AtlasBoundsHlsl(), "main", Stage::Geometry, gh);
+    if (k.atlas_guard) gs = Module(openshao::AtlasBoundsHlsl(), "main", Stage::Geometry, gh);
     if ((k.topo == uint32_t(Topology::Points) || k.atlas_guard) && gs) p.Stage(VK_SHADER_STAGE_GEOMETRY_BIT, gs, "main");
     VkPipeline pso = p.Create(dev_, pcache_);
     psos_[h] = pso;
@@ -1683,6 +1789,12 @@ VkPipeline VulkanBackend::EnsurePipeline(const PsoKey& k, VkShaderModule vs, VkS
 }
 
 void VulkanBackend::Push(const Bindings& b) {
+    if (pushed_valid_ && !std::memcmp(&b, &pushed_, sizeof(b))) {
+        g_perf.push_kept++;
+        return;
+    }
+    pushed_ = b;
+    pushed_valid_ = true;
     VkDescriptorBufferInfo bufs[2] = {{b.vc ? b.vc : b.dc, b.vc ? b.vc_off : b.dc_off, b.vc ? b.vc_size : b.dc_size},
                                       {b.dc, b.dc_off, b.dc_size}};
     VkDescriptorImageInfo imgs[4], smps[4];
@@ -2215,9 +2327,11 @@ Image* VulkanBackend::BindGuestTexture(const State& s, int stage, const TextureD
         tx.frame = presents_ + 1;
         tx.palette = palette.hash;
         const uint8_t* p = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
-        auto perf_t = PerfClock::now();
-        uint64_t sig = MemSig(d.data, total) ^ DirtyEpoch(d.data) ^ palette.hash;
-        g_perf.sig += PerfMs(perf_t);
+        uint64_t sig;
+        {
+            PerfScope perf_sig{g_perf.sig};
+            sig = MemSig(d.data, total) ^ DirtyEpoch(d.data) ^ palette.hash;
+        }
         if (sig != tx.sig || !same || tx.icons != vkr::icons::Epoch()) {
             tx.icons = vkr::icons::Epoch();
             PerfScope perf_up{g_perf.texup};
@@ -2371,11 +2485,12 @@ void VulkanBackend::EnsureVertexShader(const State& s, const Assembled& a, DrawS
 }
 
 bool VulkanBackend::BindStageTexturesAndTargets(const State& s, DrawTextures& stages) {
-    auto perf_t = PerfClock::now();
     draw_rt_ = static_cast<Target*>(bound_rt_);
     draw_ds_ = static_cast<Target*>(bound_ds_);
-    for (int i = 0; i < 4; i++) stages.res[i] = BindTexture(s, i, stages);
-    g_perf.bind += PerfMs(perf_t);
+    {
+        PerfScope perf_bind{g_perf.bind};
+        for (int i = 0; i < 4; i++) stages.res[i] = BindTexture(s, i, stages);
+    }
     // textures may have recorded copies that unbound the targets
     return BindTargets(s);
 }
@@ -2633,9 +2748,19 @@ float VulkanBackend::PointScale() const {
 
 void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const PsoKey& k, const DrawTextures& stages,
                                     GuestExtent size, DrawConstants& c, Bindings& b) {
-    Alloc vc = Upload(sizeof(s.vsc), 256);
-    std::memcpy(vc.cpu, s.vsc.data(), sizeof(s.vsc));
-    Alloc dc = Upload(sizeof(DrawConstants), 256);
+    // the threaded backend counts the constants' changes; without it they are compared
+    const bool counted = port::state::g_vsc_counted;
+    if (kept_vc_.valid && (counted ? kept_vsc_changes_ == port::state::g_vsc_changes
+                                   : !std::memcmp(kept_vsc_.data(), s.vsc.data(), sizeof(s.vsc)))) {
+        g_perf.vc_kept++;
+        if (counted && port::state::Check() && std::memcmp(kept_vsc_.data(), s.vsc.data(), sizeof(s.vsc)))
+            LOG_FIRST(16, "state check: vertex constants changed uncounted");
+    } else {
+        kept_vc_ = {true, Upload(sizeof(s.vsc), 256)};
+        std::memcpy(kept_vc_.at.cpu, s.vsc.data(), sizeof(s.vsc));
+        if (counted) kept_vsc_changes_ = port::state::g_vsc_changes;
+        if (!counted || port::state::Check()) kept_vsc_ = s.vsc;
+    }
     FillSurfaceConstants(s, size, c);
     // points: host pixels per console pixel, also keeps them off the far edge pull out of screen passes
     if (k.topo == uint32_t(Topology::Points)) c.surf[3] = PointScale();
@@ -2646,7 +2771,15 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
         FillTransformConstants(s, size, c);
         FillLightConstants(s, sh.fk, c);
     }
-    std::memcpy(dc.cpu, &c, sizeof(c));
+    if (kept_dc_.valid && !std::memcmp(&kept_c_, &c, sizeof(c))) {
+        g_perf.dc_kept++;
+    } else {
+        kept_dc_ = {true, Upload(sizeof(DrawConstants), 256)};
+        std::memcpy(kept_dc_.at.cpu, &c, sizeof(c));
+        kept_c_ = c;
+    }
+    const Alloc& vc = kept_vc_.at;
+    const Alloc& dc = kept_dc_.at;
     b.vc = vc.buf;
     b.vc_off = vc.off;
     b.vc_size = sizeof(s.vsc);
@@ -2661,7 +2794,7 @@ void VulkanBackend::UploadConstants(const State& s, const DrawShaders& sh, const
 // Clamped, it takes the edge texel instead, which a wrapped texture used once over 0..1 has there anyway.
 bool UnitTexcoords(const Assembled& a, const DrawTextures& stages) {
     // ShaolinMonksRecomp: immediate sprites with FLOAT4 coordinates on plain 2D textures
-    if (shaolin::UnitSpriteTexcoords(a)) {
+    if (openshao::UnitSpriteTexcoords(a)) {
         bool guarded = true;
         for (int i = 0; i < 4; ++i)
             if (stages.res[i]) guarded &= !stages.rt[i] && stages.info[i].kind == kTex2D && !stages.info[i].rect;
@@ -2687,10 +2820,17 @@ bool UnitTexcoords(const Assembled& a, const DrawTextures& stages) {
     return any;
 }
 
+// UnitTexcoords only changes stages that wrap (XboxXBERecomp 16bf1cd)
+bool AnyStageWraps(const State& s) {
+    for (const auto& t : s.tss)
+        if (t[kTssAddressU] == kTaddressWrap || t[kTssAddressV] == kTaddressWrap) return true;
+    return false;
+}
+
 // a stage without a texture gets a black texture of its kind
 void VulkanBackend::SetTextureViewsAndSamplers(const State& s, const Assembled& a, DrawTextures& stages, Bindings& b) {
     for (int i = 0; i < 4; i++) b.views[i] = stages.view[i] ? stages.view[i] : null_[stages.info[i].kind].view;
-    StageSamplers(s, stages, UnitTexcoords(a, stages), b.samplers);
+    StageSamplers(s, stages, AnyStageWraps(s) && UnitTexcoords(a, stages), b.samplers);
 }
 
 // viewport covers the target, the guest viewport is in the shader; scissor clips to it
@@ -2744,9 +2884,11 @@ void VulkanBackend::DrawGeometry(const Assembled& a) {
 
 bool VulkanBackend::AssembleDraw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices,
                                  Assembled& a) {
-    auto perf_t = PerfClock::now();
-    bool assembled = Assemble(s, prim, start, count, indices, a);
-    g_perf.assemble += PerfMs(perf_t);
+    bool assembled;
+    {
+        PerfScope perf_assemble{g_perf.assemble};
+        assembled = Assemble(s, prim, start, count, indices, a);
+    }
     g_perf.verts += a.vertex_count;
     g_perf.raw += a.vertices.empty();
     return assembled;
@@ -2847,22 +2989,30 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     if (!AssembleDraw(s, prim, start, count, indices, a)) return;
     // past the ring every upload is a buffer of its own: seconds lost on a frame that draws a whole level once
     if (CurrentFrame().used > kUploadSize - kUploadReserve) Submit(true);
+    PerfSteps steps;
     if (!BindTargets(s)) return;
+    steps.Lap(0);
 
     // vertex shader
     DrawShaders sh = ClassifyShaders(s, a, count);
     if (sh.prog) EnsureProgramHash(s);
     sh.vkey = VertexKey(s, a, sh);
     EnsureVertexShader(s, a, sh);
+    steps.Lap(1);
 
     // stage textures, then the pixel shader made for them
     DrawTextures stages;
     if (!BindStageTexturesAndTargets(s, stages)) return;
+    // upstream's Bloom Effect setting: off leaves out the glow's final composite, as upstream does by default
+    if (!openshao::launcher::Current().bloom_effect && openshao::IsOriginalBloomEffectComposite(s, prim, count, stages.rt[0]))
+        return;
+    steps.Lap(2);
     PixelKey pk = MakePixelKey(s, stages.info);
     pk.quad = sh.quad;
     sh.pkey = Hash(&pk, sizeof(pk));
     EnsurePixelShader(pk, sh);
     if (!sh.vs || !sh.ps) return;
+    steps.Lap(1);
 
     // pipeline; ShaolinMonksRecomp's guard keeps atlas sprites inside their cell
     PsoKey k;
@@ -2876,6 +3026,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     k.atlas_guard = sh.quad && a.topology == Topology::Triangles && atlas && !target_texture;
     VkPipeline pso = EnsurePipeline(k, sh.vs, sh.ps);
     if (!pso) return;
+    steps.Lap(3);
 
     // constants, views and samplers, viewport and scissor, blend factor and stencil reference
     GuestExtent size;
@@ -2883,6 +3034,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     DrawConstants c{};
     Bindings b;
     UploadConstants(s, sh, k, stages, size, c, b);
+    steps.Lap(4);
     SetTextureViewsAndSamplers(s, a, stages, b);
     EnsureRendering();
     if (pso != bound_pso_) {
@@ -2890,13 +3042,16 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         bound_pso_ = pso;
     }
     Push(b);
+    steps.Lap(5);
     SetViewportScissor(s, size.w);
     SetBlendFactorStencilRef(s);
+    steps.Lap(6);
 
     // geometry, counted while the title runs a visibility test
     uint32_t query = BeginCountedDraw(s);
     DrawGeometry(a);
     EndCountedDraw(query);
+    steps.Lap(7);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -3160,12 +3315,13 @@ void VulkanBackend::DrawFrame(Target* t, Image& out, uint32_t w, uint32_t h) {
         SetViewport({(float(w) - vw) / 2, (float(h) - vh) / 2, vw, vh});
         SetScissor(0, 0, int32_t(w), int32_t(h));
         float uv[4] = {0, 0, 1, 1};
-        Blit(*t, uv, {.gamma = gamma_, .taps = shaolin::sfd::PresentationTaps()});
+        Blit(*t, uv, {.gamma = gamma_, .taps = openshao::sfd::PresentationTaps()});
     }
     // the quick menu and status over the frame; ImGui binds its own pipeline and state
     EnsureRendering();
     vkr::overlay::Draw(Cmd(), out.fmt, w, h);
     bound_pso_ = VK_NULL_HANDLE;
+    pushed_valid_ = false;
     EndRendering();
     bound_rt_ = nullptr;
 }
@@ -3208,17 +3364,25 @@ void LogPerf() {
     Perf& p = g_perf;
     double n = double(perf_frames);
     double host = p.draw + p.clear + p.copy + p.present + p.sync;
-    LOGI("perf: %.1f fps %.2f ms/frame | host %.2f (draw %.2f: assemble %.2f bind %.2f [check %.2f, upload %.2f] "
+    LOGR("perf: %.1f fps %.2f ms/frame | host %.2f (draw %.2f: assemble %.2f bind %.2f [check %.2f, upload %.2f] "
          "compile %.2f; clear %.2f copy %.2f sync %.2f present %.2f [swap %.2f wait %.2f]) other %.2f",
          n * 1000.0 / el, el / n, host / n, p.draw / n, p.assemble / n, p.bind / n, p.sig / n, p.texup / n, p.compile / n,
          p.clear / n, p.copy / n, p.sync / n, p.present / n, p.swap / n, p.wait / n, (el - host) / n);
-    LOGI("perf: title thread per frame: recording %.2f ms, waiting %.2f ms (%.1f waits)", g_perf_capture_ns.exchange(0) / n / 1e6,
+    LOGR("perf: title thread per frame: recording %.2f ms, waiting %.2f ms (%.1f waits)", g_perf_capture_ns.exchange(0) / n / 1e6,
          g_perf_wait_ns.exchange(0) / n / 1e6, g_perf_waits.exchange(0) / n);
-    LOGI("perf: per frame %.0f draws (%.0f raw) %.0fk verts %.1f MB upload %.1f overflow | %.1f tex uploads %.2f MB, "
+    LOGR("perf: per frame %.0f draws (%.0f raw) %.0fk verts %.1f MB upload %.1f overflow | %.1f tex checks %.2f MB %.2f ms, "
+         "%.1f tex uploads %.2f MB, "
          "%.1f new tex, %.1f new targets, %.1f target uploads, %.1f read-backs %.1f late | %llu shaders %llu pipelines",
-         p.draws / n, p.raw / n, p.verts / n / 1000.0, p.upload / n / 1048576.0, p.overflow / n, p.texups / n,
+         p.draws / n, p.raw / n, p.verts / n / 1000.0, p.upload / n / 1048576.0, p.overflow / n, p.sigs / n,
+         p.sig_bytes / n / 1048576.0, p.sig / n, p.texups / n,
          p.texup_bytes / n / 1048576.0, p.newtex / n, p.targets / n, p.rtups / n, p.syncs / n, p.lates / n,
          (unsigned long long)p.shaders, (unsigned long long)p.psos);
+    char steps[256];
+    size_t at = 0;
+    for (int i = 0; i < 8; i++) at += std::snprintf(steps + at, sizeof(steps) - at, "%s%s %.2f", i ? ", " : "", kDrawSteps[i], p.steps[i] / n);
+    const double d = p.draws ? double(p.draws) : 1.0;
+    LOGR("perf: draw steps ms/frame: %s | kept: vertex constants %.0f%%, draw constants %.0f%%, bindings %.0f%%", steps,
+         100.0 * p.vc_kept / d, 100.0 * p.dc_kept / d, 100.0 * p.push_kept / d);
     g_perf = Perf{};
     perf_start = PerfClock::now();
     perf_frames = 0;

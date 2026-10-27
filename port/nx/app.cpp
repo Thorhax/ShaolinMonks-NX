@@ -30,6 +30,8 @@ void LoadPlatform(const void* raw) {
     g_threading.render_core = int(s["render_core"].value_or(int64_t(g_threading.render_core)));
     if (g_threading.render_core < 0 || g_threading.render_core > 2) g_threading.render_core = 2;
     g_threading.renderer_status = s["renderer"].value_or(std::string("vulkan")) == "status";
+    g_threading.perf = s["perf"].value_or(false);
+    g_threading.profile = s["profile"].value_or(false);
     port::menu::SetSwitchIcons(s["button_icons"].value_or(std::string("switch")) != "xbox");
     port::menu::SetSaveHook(app::Save);
 }
@@ -40,6 +42,8 @@ void SavePlatform(void* raw) {
     s.insert_or_assign("guest_priority", g_threading.guest_priority);
     s.insert_or_assign("render_core", g_threading.render_core);
     s.insert_or_assign("renderer", g_threading.renderer_status ? "status" : "vulkan");
+    s.insert_or_assign("perf", g_threading.perf);
+    if (g_threading.profile) s.insert_or_assign("profile", true);  // a diagnostic: written only while it is on
     s.insert_or_assign("button_icons", port::menu::SwitchIcons() ? "switch" : "xbox");
     static_cast<toml::table*>(raw)->insert_or_assign("switch", s);
 }
@@ -68,7 +72,7 @@ toml::table g_table;
 
 void Load() {
     try {
-        g_table = toml::parse_file(shaolin::paths::Config().string());
+        g_table = toml::parse_file(openshao::paths::Config().string());
     } catch (const toml::parse_error& e) {
         LOGW("settings: %s, using the defaults", e.what());
         g_table = {};
@@ -96,7 +100,7 @@ void Save() {
     g_table.insert_or_assign("display", d);
     nx::SavePlatform(&g_table);
     if (kGame.save) kGame.save(&g_table);
-    std::ofstream(shaolin::paths::Config()) << g_table << "\n";
+    std::ofstream(openshao::paths::Config()) << g_table << "\n";
 }
 
 void LogSettings() { LOGR("settings: %s", (std::ostringstream() << g_table).str().c_str()); }
@@ -154,7 +158,11 @@ void Pace() {
     const auto period = std::chrono::nanoseconds(1000000000ull / cap);
     next += period;
     if (next < now - period) next = now;
-    if (next > clock::now()) std::this_thread::sleep_until(next);
+    if (next > clock::now()) {
+        const auto slept = clock::now();
+        std::this_thread::sleep_until(next);
+        nx::perf::Paced(uint64_t(std::chrono::nanoseconds(clock::now() - slept).count()));
+    }
 }
 
 }  // namespace app

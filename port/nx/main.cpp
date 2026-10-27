@@ -44,10 +44,10 @@ namespace {
 int main(int, char**) {
     appletSetFocusHandlingMode(AppletFocusHandlingMode_SuspendHomeSleep);
     std::string error;
-    if (!shaolin::paths::Initialize(nx::kRoot, false, {}, error)) Fatal(("Cannot use the SD card folder: " + error).c_str());
+    if (!openshao::paths::Initialize(nx::kRoot, false, {}, error)) Fatal(("Cannot use the SD card folder: " + error).c_str());
     // the last few runs' logs stay: a short launch after a long session would otherwise wipe it
     {
-        const auto dir = shaolin::paths::Logs();
+        const auto dir = openshao::paths::Logs();
         const std::string base = app::kGame.log;
         std::error_code ec;
         for (int n = 3; n >= 1; n--) {
@@ -57,9 +57,11 @@ int main(int, char**) {
             std::filesystem::rename(from, to, ec);
         }
     }
-    logx::Init(shaolin::paths::Logs().string(), app::kGame.log);
+    logx::Init(openshao::paths::Logs().string(), app::kGame.log);
     nx::InstallCrashLog();
     app::Load();
+    nx::perf::Init(nx::Threading().perf, nx::Threading().profile);
+    nx::perf::NameThread("main");
     LOGR("Shaolin Monks NX %s by Thorhax", PORT_VERSION);
     app::LogSystem();
     const AppletType type = appletGetAppletType();

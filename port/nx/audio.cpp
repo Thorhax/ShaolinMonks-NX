@@ -25,6 +25,7 @@ void StartOutput(std::function<void(float*, uint32_t)> render) {
     std::thread([render = std::move(render)] {
         svcSetThreadCoreMask(CUR_THREAD_HANDLE, 0, 1);
         svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2B);
+        nx::perf::NameThread("audio");
         std::vector<float> mix(kFrames * 2);
         if (nx::OutputHeld()) {
             const auto period = std::chrono::nanoseconds(1000000000ull * kFrames / 48000);
@@ -56,7 +57,7 @@ void StartOutput(std::function<void(float*, uint32_t)> render) {
             u32 count = 0;
             if (R_FAILED(audoutWaitPlayFinish(&done, &count, UINT64_MAX)) || !done) continue;
             render(mix.data(), kFrames);
-            const float gain = shaolin::launcher::AudioGain();
+            const float gain = openshao::launcher::AudioGain();
             auto* out = static_cast<int16_t*>(done->buffer);
             for (uint32_t i = 0; i < kFrames * 2; i++) out[i] = int16_t(std::clamp(mix[i] * gain, -1.0f, 1.0f) * 32767.0f);
             audoutAppendAudioOutBuffer(done);

@@ -102,7 +102,7 @@ Pad Poll(int port) {
         p.analog[5] = on(HidNpadButton_L) ? 255 : 0;
         p.analog[6] = on(HidNpadButton_ZL) ? 255 : 0;
         p.analog[7] = on(HidNpadButton_ZR) ? 255 : 0;
-        const float dz = float(shaolin::launcher::Current().deadzone);
+        const float dz = float(openshao::launcher::Current().deadzone);
         const HidAnalogStickState l = padGetStickPos(&s, 0), r = padGetStickPos(&s, 1);
         DeadZone(l.x, l.y, dz, p.lx, p.ly);
         DeadZone(r.x, r.y, dz, p.rx, p.ry);

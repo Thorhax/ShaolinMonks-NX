@@ -1,7 +1,7 @@
 # Shaolin Monks NX
 
-A Nintendo Switch port of **Mortal Kombat: Shaolin Monks**, built on [ShaolinMonksRecomp](https://github.com/OAleex/ShaolinMonksRecomp),
-OAleex's static recompilation of the original Xbox game. The game's x86 code is translated to C++ ahead of time by
+A Nintendo Switch port of **Mortal Kombat: Shaolin Monks**, built on [OpenShao](https://github.com/OAleex/OpenShao)
+(formerly ShaolinMonksRecomp), OAleex's static recompilation of the original Xbox game. The game's x86 code is translated to C++ ahead of time by
 [XboxXBERecomp](https://github.com/TGP482/XboxXBERecomp) and compiled for the Switch's ARM CPU; its Direct3D 8
 graphics are drawn with Vulkan through Mesa's NVK driver. This is not an emulator.
 
@@ -38,7 +38,7 @@ The first start writes `settings.toml` there, and makes these folders:
 |---|---|
 | `hdd/` | the Xbox hard disk: saves are in `hdd/E/UDATA/4d570029/`, with backups of the last saves in `hdd/.backups/` |
 | `cache/` | compiled shaders and pipelines (the first visit to an area compiles them; later runs are smoother) |
-| `mods/` | mods and language packs, copied from a PC install of ShaolinMonksRecomp (see Known limitations) |
+| `mods/` | mods and language packs, copied from a PC install of OpenShao (see Known limitations) |
 | `logs/` | the log of the last four runs (`shaolin-recomp.log`, then `.1` to `.3`), and `crash.log` after a crash |
 
 ## Controls
@@ -71,7 +71,7 @@ Hold **−** and press **+** to open it; the game sees no input while it is open
   jump to rise). For both players at once: 10x damage to enemies, Unlock everything, and Unlock all fatalities (every
   character's fatalities named, with their buttons, in the Moves tab of the pause menu). The unlocks are saved with
   your progress the next time the game saves.
-- **Show FPS**, and **Button icons** (Switch or Xbox).
+- **Show FPS**, **Button icons** (Switch or Xbox) and **Bloom effect**.
 
 ## Settings
 
@@ -80,6 +80,9 @@ Hold **−** and press **+** to open it; the game sees no input while it is open
 | Key | |
 |---|---|
 | `language` | `en`, `fr`, `de`, `es` or `it` |
+| `voice_language` | the spoken language, set apart from the text: the same codes |
+| `bloom_effect` | the original Xbox glow, `false` by default as upstream has it |
+| `[enhancements] scorpion_unfiltered` | upstream's Scorpion Unfiltered |
 | `[display] render_percent` | the 3D resolution, in percent of the console's screen height (100: 720 lines handheld, 1080 docked) |
 | `[display] vsync`, `fps_cap`, `aniso` | |
 | `[game]` | the game's own options (volumes, brightness, Versus rules); `override_original = true` applies them over the save |
@@ -119,13 +122,13 @@ build adapts their files into the build folder and never changes them.
 - No emulator-style save states: the recompiled game keeps its place in native call stacks, which a snapshot cannot
   restore. Save at the shrines.
 - 10x damage is new and lightly tested.
-- ShaolinMonksRecomp's Krypt mod manager (browsing and downloading mods) is not included. Mods and language packs
-  still load: install them with ShaolinMonksRecomp on a PC, then copy the whole contents of its `mods` folder
+- OpenShao's mod manager (browsing and downloading mods) is not included. Mods and language packs
+  still load: install them with OpenShao on a PC, then copy the whole contents of its `mods` folder
   (with `installed.toml`) into `/switch/shaolinmonks/mods/`. Untested on the console so far.
 
 ## Credits
 
-- **OAleex** for ShaolinMonksRecomp, and **TGP482** for XboxXBERecomp, which do the hard part.
+- **OAleex** for OpenShao (formerly ShaolinMonksRecomp), and **TGP482** for XboxXBERecomp, which do the hard part.
 - The **Mesa** developers for NVK, and the authors of the Switch Horizon SDK build of it.
 - **NaGa**'s Dolphin NX frontend and **YabaSanshiro**, whose in-game menu the quick menu follows.
 - **switchbrew** and **devkitPro** for libnx and the toolchain.
@@ -135,7 +138,7 @@ See [licenses/THIRD_PARTY.md](licenses/THIRD_PARTY.md) for every project used an
 
 ## Licence and disclaimer
 
-The code in this repository is licensed under the **GPL-2.0-or-later**, as ShaolinMonksRecomp is; see [LICENSE](LICENSE).
+The code in this repository is licensed under the **GPL-2.0-or-later**, as OpenShao is; see [LICENSE](LICENSE).
 It grants no rights to the original game.
 
 Mortal Kombat and Shaolin Monks are trademarks of Warner Bros. Entertainment Inc.; the game was developed by Midway.

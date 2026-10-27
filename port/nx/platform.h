@@ -12,6 +12,8 @@ struct ThreadingConfig {
     int guest_priority = 59;  // the priority Horizon time slices on cores 0 to 2
     int render_core = 2;
     bool renderer_status = false;  // renderer = "status": no graphics, the bring-up console
+    bool perf = false;             // perf = true: the perf lines once a second (perf.cpp)
+    bool profile = false;          // profile = true: where the title and render threads spend their time (perf.cpp)
 };
 const ThreadingConfig& Threading();
 void LoadPlatform(const void* table);  // toml::table
@@ -27,6 +29,14 @@ uint64_t PresentedFrames();
 
 // while the intro plays: the window and audout are its own, the game runs unseen, unheard and with untouched pads
 bool OutputHeld();
+
+// [switch] perf: cores' and threads' use and frame pacing, logged once a second
+namespace perf {
+void Init(bool on, bool profile);
+void NameThread(const char* name);  // the calling thread, as the log names it
+void Presented();
+void Paced(uint64_t ns);  // time the frame limiter slept
+}  // namespace perf
 
 // CPU exceptions write logs/crash.log from here on
 void InstallCrashLog();

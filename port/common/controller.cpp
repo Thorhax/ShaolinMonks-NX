@@ -9,7 +9,7 @@
 #include "core/input.h"
 #include "core/log.h"
 
-namespace shaolin::controller {
+namespace openshao::controller {
 namespace {
 std::atomic<bool> multiplayer{false};
 std::atomic<bool> rumble_enabled{true};
@@ -38,4 +38,4 @@ void Save(void* raw) {
 bool Multiplayer() { return multiplayer; }
 bool RumbleEnabled() { return rumble_enabled; }
 
-}  // namespace shaolin::controller
+}  // namespace openshao::controller

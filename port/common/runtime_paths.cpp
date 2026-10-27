@@ -7,7 +7,7 @@
 
 namespace fs = std::filesystem;
 
-namespace shaolin::paths {
+namespace openshao::paths {
 namespace {
 fs::path root;
 }
@@ -55,4 +55,4 @@ void ReportError(const std::wstring& reason, const fs::path& dump) {
     logx::Flush();
 }
 
-}  // namespace shaolin::paths
+}  // namespace openshao::paths

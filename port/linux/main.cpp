@@ -18,11 +18,11 @@ void StartTestHooks();
 
 int main(int, char**) {
     std::string error;
-    if (!shaolin::paths::Initialize(app::ExeDir(), false, {}, error)) {
+    if (!openshao::paths::Initialize(app::ExeDir(), false, {}, error)) {
         std::fprintf(stderr, "%s\n", error.c_str());
         return 2;
     }
-    logx::Init(shaolin::paths::Logs().string(), app::kGame.log);
+    logx::Init(openshao::paths::Logs().string(), app::kGame.log);
     app::Load();
     if (app::kGame.init) app::kGame.init();
     if (app::kGame.window) app::kGame.window(nullptr);

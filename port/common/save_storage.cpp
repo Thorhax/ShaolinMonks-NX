@@ -12,7 +12,7 @@
 
 namespace fs = std::filesystem;
 
-namespace shaolin::storage {
+namespace openshao::storage {
 namespace {
 fs::path g_root;
 std::mutex g_backups;
@@ -124,6 +124,6 @@ bool PrepareDirectory(const fs::path&, const fs::path& destination, std::string&
 fs::path SavedGamesRoot(std::string&, bool) { return {}; }
 
 DirectoryLock::~DirectoryLock() = default;
-bool DirectoryLock::Acquire(const fs::path&, std::string&) { return true; }
+bool DirectoryLock::Acquire(const fs::path&, std::string&, bool*) { return true; }
 
-}  // namespace shaolin::storage
+}  // namespace openshao::storage

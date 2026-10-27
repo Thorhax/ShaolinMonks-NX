@@ -90,7 +90,7 @@ void Terminate() {
 namespace nx {
 // called once the log folder exists
 void InstallCrashLog() {
-    std::snprintf(g_path, sizeof(g_path), "%s/crash.log", shaolin::paths::Logs().string().c_str());
+    std::snprintf(g_path, sizeof(g_path), "%s/crash.log", openshao::paths::Logs().string().c_str());
     // the NRO's code is one mapping, starting at the module base the linker map's addresses are relative to
     MemoryInfo info;
     u32 page;

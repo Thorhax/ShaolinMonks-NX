@@ -15,8 +15,8 @@ namespace port {
 
 void BeforeGuestThread(pthread_attr_t*) {}
 
-// Horizon keeps no names for a process's own threads
-void NameThread(const char*) {}
+// Horizon keeps no names for a process's own threads: only the perf lines use them
+void NameThread(const char* name) { nx::perf::NameThread(name); }
 
 void OnGuestThread() {
     const auto& t = nx::Threading();
@@ -32,6 +32,7 @@ void OnGuestThread() {
 
 void OnRenderThread() {
     svcSetThreadCoreMask(CUR_THREAD_HANDLE, nx::Threading().render_core, 1u << nx::Threading().render_core);
+    nx::perf::NameThread("render");
 }
 
 }  // namespace port
