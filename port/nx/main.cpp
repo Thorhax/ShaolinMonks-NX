@@ -15,6 +15,7 @@
 #include "kernel/memory.h"
 #include "nx/guest_memory.h"
 #include "nx/platform.h"
+#include "port_compat.h"
 #include "runtime_paths.h"
 #include "thorhax_intro.h"
 
@@ -90,7 +91,7 @@ int main(int, char**) {
     // the guest runs on its own threads; this one keeps the applet responsive and flushes the log
     auto last = std::chrono::steady_clock::now();
     uint64_t last_frames = nx::PresentedFrames();
-    while (appletMainLoop()) {
+    while (appletMainLoop() && !port::ExitRequested()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         const auto now = std::chrono::steady_clock::now();
         const double seconds = std::chrono::duration<double>(now - last).count();
@@ -103,6 +104,16 @@ int main(int, char**) {
             last_frames = frames;
             logx::Flush();
         }
+    }
+    if (port::ExitRequested()) {
+        // the main menu's Exit Game: the software closes as HOME's Close would, through am's Exit (ISelfController 0),
+        // which ends the process. libnx's own exit would end its services under the game's and the renderer's running
+        // threads, and a bare process exit reads as a crash to the system.
+        LOGR("Exit from the main menu");
+        logx::Flush();
+        if (Service* self = appletGetServiceSession_SelfController(); self && R_SUCCEEDED(serviceDispatch(self, 0)))
+            for (;;) svcSleepThread(1000000000ll);
+        svcExitProcess();
     }
     logx::Flush();
     kernel::Shutdown(0);

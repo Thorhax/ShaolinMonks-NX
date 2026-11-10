@@ -3,16 +3,23 @@
 //
 // Holding White (LB) on the main menu, the ten-button sequence in ed_nexus_sequence.h unlocks the Nexus for the
 // session. The gameplay pause menu then has a Nexus row after the title's own three, and its shortcut opens it too.
-// The Nexus gets an Unlock All Kontent row, which lasts the session and never touches the save.
+// The Nexus gets upstream's debug rows: Unlock All Kontent (for the session, never in the save), the players' damage
+// multiplier, a health refill and a Player 2 toggle that takes effect at the next map. The room loader hook at the end
+// is upstream's ed_nexus.cpp, which Survival Mode's sessions go through as well.
+#include <array>
 #include <string>
 
+#include "controller.h"
 #include "core/log.h"
 #include "cpu/x86_context.h"
+#include "difficulty.h"
 #include "ed_nexus.h"
 #include "ed_nexus_sequence.h"
 #include "kernel/kernel.h"
 #include "launcher.h"
 #include "menu_text.h"
+#include "survival_mode.h"
+#include "survival_session.h"
 
 namespace openshao::ed_nexus {
 namespace {
@@ -22,7 +29,21 @@ uint32_t kontent_menu = 0;
 constexpr uint32_t MenuLabel = 0x19F;
 constexpr uint32_t KontentLabel = 0xFFFFFFFE;
 constexpr uint32_t KontentRow = 7;
-constexpr uint32_t KontentListBytes = 9 * 8;
+// after Kontent: the players' damage, x1, x2, x4 or x8 for the session
+constexpr uint32_t DamageLabel = 0xFFFFFFFD;
+constexpr uint32_t DamageRow = 8;
+// both heroes' health refilled (past the Monk healing cut too)
+constexpr uint32_t HealthLabel = 0xFFFFFFFC;
+constexpr uint32_t HealthRow = 9;
+// Player 2 on or off, from the next map on
+constexpr uint32_t Player2Label = 0xFFFFFFFB;
+constexpr uint32_t Player2Row = 10;
+constexpr uint32_t Player2TextBytes = 64;
+bool player2_pending = false, player2_target = false;
+constexpr uint32_t DebugRows = 11;
+constexpr std::array<uint32_t, 4> DamageSteps{1, 2, 4, 8};
+unsigned damage_step = 0;
+constexpr uint32_t KontentListBytes = (DebugRows + 1) * 8;
 constexpr uint32_t DebugTextBytes = 24;
 // the title's three pause rows, the Nexus and the terminator
 constexpr uint32_t PauseRows = 4;
@@ -37,7 +58,9 @@ void WriteGuestText(uint32_t address, const char* text, unsigned bytes) {
     }
 }
 // the guest allocation keeps the title's text pointers valid across draws
-void WriteMenuText(uint32_t address, const std::string& text) { WriteGuestText(address, text.c_str(), DebugTextBytes); }
+void WriteMenuText(uint32_t address, const std::string& text, uint32_t bytes = DebugTextBytes) {
+    WriteGuestText(address, text.c_str(), bytes);
+}
 // the shared catalog's text in the title's font encoding, as upstream's pause pages write it
 std::string Localized(std::string_view id) {
     const auto& locale = launcher::Current().language;
@@ -49,9 +72,20 @@ void PausePair(uint32_t address, uint32_t label, uint32_t callback = 0x135C1) {
 }
 void PauseTerminator(uint32_t address) { PausePair(address, 0xFFFFFFFF, 0); }
 
+void WriteDamageText() {
+    WriteMenuText(kontent_menu + KontentListBytes + 3 * DebugTextBytes,
+                  Localized("debug.player_damage") + ": x" + std::to_string(DamageSteps[damage_step]));
+}
+void WritePlayer2Text() {
+    const bool on = player2_pending ? player2_target : Player2Active();
+    std::string text = Localized("debug.player2") + ": " + Localized(on ? "value.on" : "value.off");
+    if (player2_pending) text += " (" + Localized("debug.next_map") + ")";
+    WriteMenuText(kontent_menu + KontentListBytes + 5 * DebugTextBytes, text, Player2TextBytes);
+}
+
 bool EnsureMenuStorage() {
     if (!kontent_menu) {
-        kontent_menu = mem::AllocSystem(KontentListBytes + 3 * DebugTextBytes);
+        kontent_menu = mem::AllocSystem(KontentListBytes + 5 * DebugTextBytes + Player2TextBytes);
         if (!kontent_menu) {
             LOGI("Cannot allocate debug menu storage");
             return false;
@@ -61,6 +95,9 @@ bool EnsureMenuStorage() {
     WriteMenuText(kontent_menu + KontentListBytes, Localized("debug.unlock_kontent"));
     WriteMenuText(kontent_menu + KontentListBytes + DebugTextBytes, Localized("debug.kontent_unlocked"));
     WriteMenuText(kontent_menu + KontentListBytes + 2 * DebugTextBytes, Localized("debug.menu"));
+    WriteDamageText();
+    WriteMenuText(kontent_menu + KontentListBytes + 4 * DebugTextBytes, Localized("debug.restore_health"));
+    WritePlayer2Text();
     return true;
 }
 
@@ -118,10 +155,14 @@ void AddKontentAction(X86Context& ctx) {
     for (unsigned i = 0; i < 14; ++i) kernel::W32(kontent_menu + i * 4, kernel::R32(0x4F1F00 + i * 4));
     kernel::W32(kontent_menu + 56, KontentLabel);
     kernel::W32(kontent_menu + 60, 0x135C1);  // the retail no-op; accept is handled in sub_00013B4D
-    kernel::W32(kontent_menu + 64, 0xFFFFFFFF);
-    kernel::W32(kontent_menu + 68, 0);
+    for (const auto [at, label] : {std::pair{64u, DamageLabel}, {72u, HealthLabel}, {80u, Player2Label}}) {
+        kernel::W32(kontent_menu + at, label);
+        kernel::W32(kontent_menu + at + 4, 0x135C1);
+    }
+    kernel::W32(kontent_menu + 88, 0xFFFFFFFF);
+    kernel::W32(kontent_menu + 92, 0);
     kernel::W32(list + 0x54, kontent_menu);
-    kernel::W32(list + 0x64, 8);
+    kernel::W32(list + 0x64, DebugRows);
 }
 
 bool in_pause = false, in_nexus = false;
@@ -167,6 +208,9 @@ void UpdateHeldInput(X86Context& ctx) {
 }  // namespace
 
 bool Unlocked() { return sequence.Unlocked(); }
+bool GameplayPaused() { return in_pause; }
+bool KontentUnlocked() { return kontent_unlocked; }
+float PlayerDamage() { return Unlocked() ? float(DamageSteps[damage_step]) : 1.f; }
 void FrontendInput(X86Context& ctx, uint8_t*) {
     // the main menu still ticks with empty input while the held White path runs
     if (ctx.ecx != 0x598430 || !(kernel::R32(0x67C668) & 1)) sequence.ResetInput();
@@ -216,14 +260,37 @@ X86_EXTERN_FUNC(__imp__sub_00013B4D);
 X86_FUNC(sub_00013B4D) {
     const uint32_t list = kernel::R32(ctx.esp + 4), event = kernel::R32(ctx.esp + 8);
     if (nexus::Unlocked() && nexus::in_nexus && event == 4 && list && nexus::kontent_menu &&
-        kernel::R32(list + 0x54) == nexus::kontent_menu && kernel::R32(list + 0x64) == 8 &&
-        kernel::R32(list + 0x6C) == nexus::KontentRow) {
-        // the session's availability only: the flags the title saves stay as they are
-        nexus::kontent_unlocked = true;
-        LOGR("All Kontent unlocked for this session; native save flags unchanged");
+        kernel::R32(list + 0x54) == nexus::kontent_menu && kernel::R32(list + 0x64) == nexus::DebugRows) {
+        switch (kernel::R32(list + 0x6C)) {
+            case nexus::KontentRow:
+                // the session's availability only: the flags the title saves stay as they are
+                nexus::kontent_unlocked = true;
+                LOGR("All Kontent unlocked for this session; native save flags unchanged");
+                break;
+            case nexus::DamageRow:
+                nexus::damage_step = (nexus::damage_step + 1) % nexus::DamageSteps.size();
+                nexus::WriteDamageText();
+                LOGR("Player damage x%u for this session", nexus::DamageSteps[nexus::damage_step]);
+                break;
+            case nexus::HealthRow:
+                LOGR("Debug health restore: %u hero(es) refilled", openshao::difficulty::RefillHeroes(ctx));
+                break;
+            case nexus::Player2Row: {
+                // the wanted state, applied when the next map loads, as the title spawns a second player
+                const bool active = nexus::Player2Active();
+                nexus::player2_target = nexus::player2_pending ? !nexus::player2_target : !active;
+                nexus::player2_pending = nexus::player2_target != active;
+                nexus::WritePlayer2Text();
+                LOGR("Debug player 2 %s at the next map",
+                     nexus::player2_pending ? (nexus::player2_target ? "on" : "off") : "unchanged");
+                break;
+            }
+            default: goto native;
+        }
         kernel::Return(ctx, 1, 0);
         return;
     }
+native:
     // event 6 in the Nexus list's handler goes back to the usual pause
     const bool cancel = event == 6;
     __imp__sub_00013B4D(ctx, base);
@@ -259,5 +326,109 @@ X86_FUNC(sub_00016992) {
         kernel::Return(ctx, nexus::kontent_menu + nexus::KontentListBytes + (nexus::kontent_unlocked ? nexus::DebugTextBytes : 0), 0);
         return;
     }
+    for (const auto [row_label, slot] : {std::pair{nexus::DamageLabel, 3u}, {nexus::HealthLabel, 4u}, {nexus::Player2Label, 5u}}) {
+        if (nexus::kontent_menu && label == row_label) {
+            kernel::Return(ctx, nexus::kontent_menu + nexus::KontentListBytes + slot * nexus::DebugTextBytes, 0);
+            return;
+        }
+    }
+    // Survival Mode's and the difficulties' own captions
+    if (const uint32_t text = openshao::survival::Label(label)) {
+        kernel::Return(ctx, text, 0);
+        return;
+    }
+    if (const uint32_t text = openshao::difficulty::Label(label, kernel::R32(ctx.esp))) {
+        kernel::Return(ctx, text, 0);
+        return;
+    }
     __imp__sub_00016992(ctx, base);
+}
+
+// Debug Player 2 (upstream's ed_nexus.cpp): the game mode at state + 0x88 (0 solo, 1 Ko-op, 2 Versus), from which
+// 0xCB690 shows the second hero. A change sets the mode, the player count (0x633038), the ports (0xD46D0) and the
+// health split (0xD4790) at the next map load.
+namespace openshao::ed_nexus {
+namespace {
+constexpr uint32_t LiveState = 0x5ACEBC, PlayerCount = 0x633038;
+uint32_t campaign_mode = ~0u, saved_live_mode = ~0u;
+bool rebuild_hud = false;
+// the HUD's layout for the mode (0x921D0): the menu widgets cleared (0x152A9 on 0x4EF3C8) and built again (0x15060)
+void RebuildHud(X86Context& ctx) {
+    const auto saved = ctx;
+    ctx.ecx = 0x4EF3C8;
+    kernel::CallGuest(ctx, 0x152A9, {0});
+    ctx = saved;
+    kernel::CallGuest(ctx, 0x15060, {});
+    ctx = saved;
+}
+uint32_t State() { return kernel::R32(LiveState); }
+void ApplyPlayer2(X86Context& ctx) {
+    if (!player2_pending) return;
+    const uint32_t state = State();
+    if (!state) return;
+    player2_pending = false;
+    const uint32_t current = kernel::R32(state + 0x88), wanted = player2_target ? 1 : 0;
+    if (current > 1 || current == wanted) {
+        if (kontent_menu) WritePlayer2Text();
+        return;
+    }
+    if (campaign_mode == ~0u) campaign_mode = current;
+    kernel::W32(state + 0x88, wanted);
+    kernel::W32(PlayerCount, wanted ? 2 : 1);
+    const auto saved = ctx;
+    kernel::CallGuest(ctx, 0x1271B, {});  // the controller ports for one or two players
+    ctx = saved;
+    // Ko-op splits the health between the heroes: refilled at the new maximum
+    difficulty::SetDebugRefill(true);
+    kernel::CallGuest(ctx, 0x12D65, {kernel::R32(state + 0x90)});
+    difficulty::SetDebugRefill(false);
+    ctx = saved;
+    controller::SetMultiplayer(wanted == 1);
+    rebuild_hud = true;
+    if (wanted == campaign_mode) campaign_mode = ~0u;
+    if (kontent_menu) WritePlayer2Text();
+    LOGR("Debug player 2 %s for this map", wanted ? "joined" : "left");
+}
+}  // namespace
+bool Player2Active() {
+    const uint32_t state = State();
+    return state && kernel::R32(state + 0x88) == 1;
+}
+void Player2BeforeSave() {
+    const uint32_t state = State();
+    if (campaign_mode == ~0u || !state) return;
+    saved_live_mode = kernel::R32(state + 0x88);
+    kernel::W32(state + 0x88, campaign_mode);
+}
+void Player2AfterSave() {
+    const uint32_t state = State();
+    if (saved_live_mode != ~0u && state) kernel::W32(state + 0x88, saved_live_mode);
+    saved_live_mode = ~0u;
+}
+void ResetPlayer2() {
+    player2_pending = false;
+    if (campaign_mode == ~0u) return;
+    // the loaded or new state has the campaign's own mode, which is followed again
+    kernel::W32(PlayerCount, campaign_mode == 1 ? 2 : 1);
+    controller::SetMultiplayer(campaign_mode == 1);
+    campaign_mode = ~0u;
+    LOGR("Debug player 2 override cleared");
+}
+}  // namespace openshao::ed_nexus
+
+X86_EXTERN_FUNC(__imp__sub_00016ACD);
+X86_FUNC(sub_00016ACD) {
+    // every room change goes through this loader (thiscall, one argument)
+    if (openshao::survival::InterceptFoundryPortal(ctx, kernel::R32(ctx.esp + 4))) {
+        kernel::Return(ctx, 0, 1);
+        return;
+    }
+    openshao::survival::RoomLoading();
+    nexus::ApplyPlayer2(ctx);
+    __imp__sub_00016ACD(ctx, base);
+    openshao::survival::RoomReady(ctx);
+    if (nexus::rebuild_hud) {
+        nexus::rebuild_hud = false;
+        nexus::RebuildHud(ctx);
+    }
 }

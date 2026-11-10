@@ -13,6 +13,7 @@
 
 #include "core/log.h"
 #include "launcher.h"
+#include "scorpion_preview_audio.h"
 #include "nx/platform.h"
 
 namespace audio {
@@ -57,6 +58,8 @@ void StartOutput(std::function<void(float*, uint32_t)> render) {
             u32 count = 0;
             if (R_FAILED(audoutWaitPlayFinish(&done, &count, UINT64_MAX)) || !done) continue;
             render(mix.data(), kFrames);
+            // the Enhancements page's Scorpion voice previews, over the game's sound
+            openshao::scorpion::audio_preview::Mix(mix.data(), kFrames);
             const float gain = openshao::launcher::AudioGain();
             auto* out = static_cast<int16_t*>(done->buffer);
             for (uint32_t i = 0; i < kFrames * 2; i++) out[i] = int16_t(std::clamp(mix[i] * gain, -1.0f, 1.0f) * 32767.0f);

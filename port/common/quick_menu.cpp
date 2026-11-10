@@ -168,6 +168,11 @@ void SetSwitchIcons(bool on) {
 uint32_t IconsEpoch() { return g_icons_epoch.load(); }
 void SetSaveHook(void (*save)()) { g_save = save; }
 
+void OpenFromGame() {
+    std::lock_guard<std::mutex> lock(g_lock);
+    Open();
+}
+
 bool InputCaptured() {
     std::lock_guard<std::mutex> lock(g_lock);
     return g_visible || g_capture_until_release;

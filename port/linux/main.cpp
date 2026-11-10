@@ -10,6 +10,7 @@
 #include "core/log.h"
 #include "image_symbols.h"
 #include "kernel/kernel.h"
+#include "port_compat.h"
 #include "runtime_paths.h"
 
 namespace port {
@@ -30,8 +31,9 @@ int main(int, char**) {
     if (!app::FindGame(game)) return 3;
     port::StartTestHooks();
     if (!kernel::Boot(std::move(game.xbe), IMAGE_XBE, game.dir.string(), (app::ExeDir() / "hdd").string())) return 1;
-    for (;;) {
+    while (!port::ExitRequested()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         logx::Flush();
     }
+    kernel::Shutdown(0);  // the main menu's Exit Game
 }

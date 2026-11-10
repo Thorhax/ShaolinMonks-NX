@@ -38,13 +38,33 @@ void Save(void* raw) {
     table.insert_or_assign("voice_language", current.voice_language);
     table.insert_or_assign("master_volume", current.master_volume);
     table.insert_or_assign("bloom_effect", current.bloom_effect);
-    toml::table enhancements;
-    enhancements.insert_or_assign("scorpion_unfiltered", current.scorpion_unfiltered);
-    table.insert_or_assign("enhancements", enhancements);
     controller::Save(raw);
     const auto extras = Merge({}, current);
+    table.insert_or_assign("enhancements", *extras["enhancements"].as_table());
     table.insert_or_assign("game", *extras["game"].as_table());
 }
+
+// the main menu's Enhancements page: its settings at once, and in settings.toml when saved. The languages stay as the
+// game started with them, as upstream's do until its restart.
+bool ApplyInGame(const Settings& settings, bool save, std::string& error) {
+    if (!Validate(settings, error)) return false;
+    Settings next = settings;
+    next.language = current.language;
+    next.voice_language = current.voice_language;
+    next.aspect_ratio = "original";
+    try {
+        if (save && !Write(paths::Config(), Merge(Disk(), next), error)) return false;
+    } catch (const std::exception& e) {
+        error = e.what();
+        return false;
+    }
+    current = next;
+    error.clear();
+    return true;
+}
+Settings Saved() { return current; }
+// the voice packs the game files hold are checked when the game starts (game_files.cpp)
+bool LanguageAvailable(std::string_view) { return true; }
 
 bool Persist(const toml::table& table, std::string& error) {
     try {

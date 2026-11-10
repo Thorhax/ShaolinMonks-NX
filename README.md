@@ -11,6 +11,8 @@ You need your own copy of the game. Nothing of the game is in this repository or
 
 - Runs the story at full speed (60 fps), with audio. Tested in handheld mode; docked and Ko-op are untested.
 - Saving and loading through the game's save shrines.
+- OpenShao's additions: Survival Mode, the Easy and Monk difficulties, restored dialogue and cinematic bars, from the
+  game's main menu.
 - A quick menu with cheats and an FPS counter.
 - The game's button prompts show Switch buttons.
 
@@ -41,6 +43,9 @@ The first start writes `settings.toml` there, and makes these folders:
 | `mods/` | mods and language packs, copied from a PC install of OpenShao (see Known limitations) |
 | `logs/` | the log of the last four runs (`shaolin-recomp.log`, then `.1` to `.3`), and `crash.log` after a crash |
 
+OpenShao's Survival unlock (`openshao-survival-unlock.dat`) and Monk progress (`openshao-monk-progress.txt`) are kept
+beside them, in `/switch/shaolinmonks/`.
+
 ## Controls
 
 Buttons are mapped by position, as on the Xbox pad:
@@ -62,9 +67,22 @@ press. The quick menu can switch them back to the Xbox icons.
 **Saving:** save shrines are the statues with lights. Stand at one and press **R** (the Xbox's Black button) to
 kneel; kneeling also restores health.
 
+## Main menu
+
+OpenShao adds rows to the game's main menu:
+
+- **Game Mode** leads to **Survival Mode**: nine levels for one player or Ko-op, with a Versus fighter and a
+  difficulty of your choice. It starts locked: find its secret in Story Mode, then save; the unlock then applies to
+  every save.
+- **Konfigure Recompilation** opens the quick menu (below).
+- **Enhancements**: Scorpion Unfiltered (press Y to hear it), Restore Lost Dialogue, Cinematic Bars and Improved
+  Difficulty, which adds Easy and Monk to the difficulty choice. Save Changes keeps them in `settings.toml`.
+- **Exit Game** closes the game.
+
 ## Quick menu
 
-Hold **−** and press **+** to open it; the game sees no input while it is open.
+Hold **−** and press **+** to open it, or choose Konfigure Recompilation in the main menu; the game sees no input
+while it is open.
 
 - **Cheats**, set for player 1 and player 2 separately (the Player row at the top):
   Invincibility, Infinite energy (the blue bar), 999,999 experience, Fatality meter always full, Moon jump (hold
@@ -82,7 +100,10 @@ Hold **−** and press **+** to open it; the game sees no input while it is open
 | `language` | `en`, `fr`, `de`, `es` or `it` |
 | `voice_language` | the spoken language, set apart from the text: the same codes |
 | `bloom_effect` | the original Xbox glow, `false` by default as upstream has it |
-| `[enhancements] scorpion_unfiltered` | upstream's Scorpion Unfiltered |
+| `[enhancements] scorpion_unfiltered` | upstream's Scorpion Unfiltered, `false` by default |
+| `[enhancements] restore_dialogue` | lost and unused dialogue played at matching story events, `true` by default |
+| `[enhancements] cinematic_bars` | the black bars of the in-game scenes, `false` by default |
+| `[enhancements] improved_difficulty` | Easy and Monk besides Normal and Hard, `true` by default |
 | `[display] render_percent` | the 3D resolution, in percent of the console's screen height (100: 720 lines handheld, 1080 docked) |
 | `[display] vsync`, `fps_cap`, `aniso` | |
 | `[game]` | the game's own options (volumes, brightness, Versus rules); `override_original = true` applies them over the save |
@@ -122,6 +143,7 @@ build adapts their files into the build folder and never changes them.
 - No emulator-style save states: the recompiled game keeps its place in native call stacks, which a snapshot cannot
   restore. Save at the shrines.
 - 10x damage is new and lightly tested.
+- OpenShao's ten pages of save slots are not included: Load Game and Save Game have the game's own nine slots.
 - OpenShao's mod manager (browsing and downloading mods) is not included. Mods and language packs
   still load: install them with OpenShao on a PC, then copy the whole contents of its `mods` folder
   (with `installed.toml`) into `/switch/shaolinmonks/mods/`. Untested on the console so far.

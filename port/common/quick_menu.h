@@ -24,6 +24,8 @@ void UpdateInput(uint32_t down, uint32_t held);
 bool InputCaptured();
 bool Visible();
 bool ShowFps();
+// the main menu's Konfigure Recompilation row opens it too, in place of upstream's PC settings pages
+void OpenFromGame();
 
 // the Switch's button icons in place of the Xbox's (the renderer draws them over the title's font atlas); a change
 // counts the epoch up, and is saved through the host's hook

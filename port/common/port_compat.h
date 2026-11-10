@@ -29,6 +29,8 @@ void OnGuestThread();
 void NameThread(const char* name);
 // first thing on the renderer's own thread
 void OnRenderThread();
+// the title's main menu asked to quit (openshao::RequestExit)
+bool ExitRequested();
 
 }  // namespace port
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(ShaolinMonksNX VERSION 0.3.1 LANGUAGES C CXX)
+project(ShaolinMonksNX VERSION 0.4.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -16,7 +16,7 @@ option(RAW_VERTICES "The Vulkan renderer reads the title's vertices as they are;
 if(NOT EXISTS "${GEN}/x86_func_mapping.cpp")
     message(FATAL_ERROR "Run tools/codegen.sh <default.xbe> first (no generated code in ${GEN})")
 endif()
-foreach(rev_dir_pair "${SDK};40e9c35451305f09ca9d86f677e4b9c2c37ff26b")
+foreach(rev_dir_pair "${SDK};f7b13fdbf9560a3b3928aea24e37c789b24408f0")
     list(GET rev_dir_pair 0 dir)
     list(GET rev_dir_pair 1 rev)
     execute_process(COMMAND git -C "${dir}" rev-parse HEAD OUTPUT_VARIABLE have OUTPUT_STRIP_TRAILING_WHITESPACE)
@@ -80,8 +80,8 @@ endif()
 # the SDK runtime, less what upstream adapts and what each platform supplies
 file(GLOB RUNTIME_SOURCES "${SDK}/runtime/*/*.cpp")
 list(FILTER RUNTIME_SOURCES EXCLUDE REGEX "/app/|/core/input\\.cpp$|/audio/xaudio2\\.cpp$|/gpu/d3d12\\.cpp$")
-list(FILTER RUNTIME_SOURCES EXCLUDE REGEX "/kernel/(files|boot|threads|memory|objects)\\.cpp$|/gpu/texture\\.cpp$|/xdk/(d3d8|xapi|dsound)\\.cpp$|/gpu/(vertex|shaders|render_thread)\\.cpp$|/cpu/dispatch\\.cpp$|/xdk/crt_math\\.cpp$|/core/log\\.cpp$")
-set(PORTED_SOURCES boot files threads memory objects texture d3d8 xapi dsound vertex shaders render_thread dispatch crt_math launcher_settings log)
+list(FILTER RUNTIME_SOURCES EXCLUDE REGEX "/kernel/(files|boot|threads|memory)\\.cpp$|/xdk/(d3d8|xapi|dsound)\\.cpp$|/gpu/(vertex|shaders|render_thread|texturedumper)\\.cpp$|/cpu/dispatch\\.cpp$|/xdk/crt_math\\.cpp$|/core/log\\.cpp$")
+set(PORTED_SOURCES boot files threads memory d3d8 xapi dsound vertex shaders render_thread dispatch crt_math launcher_settings log)
 list(TRANSFORM PORTED_SOURCES PREPEND "${PORTED}/")
 list(TRANSFORM PORTED_SOURCES APPEND ".cpp")
 # upstream's fixes to the game itself: geometry and portals, the Survival 5 arena, the brightness default, the text and
@@ -91,8 +91,35 @@ set(SHAOLIN_SOURCES "${U}/game_preferences.cpp" "${U}/raster_compat.cpp" "${U}/m
     "${U}/strip_orientation.cpp" "${U}/strip_orientation_hooks.cpp" "${U}/survival5_recovery_hooks.cpp"
     "${U}/brightness.cpp" "${U}/voice_language.cpp" "${U}/scorpion_voice.cpp" "${U}/aspect_ratio.cpp" "${U}/menu_text.cpp"
     ${IMGUI_CORE} ${UPSTREAM_MOD_SOURCES})
+# and its gameplay additions: Survival Mode, the Easy and Monk difficulties, the restored dialogue, cinematic bars, the
+# main menu's Game Mode and Enhancements rows (its menu_renderer draws them), Versus input and the debug menu's progress
+list(APPEND SHAOLIN_SOURCES "${U}/aspect_hooks.cpp" "${U}/difficulty.cpp" "${U}/difficulty_progress.cpp"
+    "${U}/dialogue_restore.cpp" "${U}/survival_mode.cpp" "${U}/survival_session.cpp" "${U}/survival_levels.cpp"
+    "${U}/survival_unlock.cpp" "${U}/ed_nexus_progress.cpp" "${U}/versus_input.cpp" "${U}/model_instances.cpp"
+    "${U}/audio_load_wait.cpp" "${U}/menu_renderer.cpp" "${PORTED}/recomp_settings.cpp" "${U}/recomp_settings_model.cpp"
+    "${U}/save_pages_book.cpp" "${U}/audio_flags.cpp" "${U}/audio_options.cpp"
+    "${U}/pipeline_precompile.cpp" "${U}/pipeline_room.cpp" "${PORTED}/pipeline_assets.cpp"
+    "${U}/scorpion_preview_audio.cpp" "${U}/scorpion_preview_adx.cpp" "${U}/scorpion_preview_mix.cpp")
+# the port's cheats hook the health setter too, and call upstream's from theirs (port/common/cheats.cpp)
+set_source_files_properties("${U}/difficulty.cpp" PROPERTIES COMPILE_DEFINITIONS "sub_00153CD0=openshao_difficulty_health_setter")
+# the title's audio effects (its DSP's reverb and routing), built as upstream builds them
+add_library(openshao_audio_effects STATIC "${U}/audio_effect_chain.cpp" "${U}/audio_reverb.cpp" "${U}/audio_crosstalk.cpp")
+target_include_directories(openshao_audio_effects PUBLIC "${U}")
+target_compile_options(openshao_audio_effects PRIVATE -O3 -fno-strict-aliasing -fwrapv)
+list(APPEND UPSTREAM_MOD_LIBS openshao_audio_effects)
 # the localized menu text upstream's Nexus labels come from, built in as upstream does
 file(READ "${UPSTREAM}/resources/menu_text.json" OPENSHAO_MENU_TEXT)
+# the main menu's last row closes the software here: Exit Game, not Exit to Desktop
+foreach(pair "Exit to Desktop|Exit Game" "Quitter vers le bureau|Quitter le jeu" "Zum Desktop beenden|Spiel beenden"
+        "Salir al escritorio|Salir del juego" "Esci al desktop|Esci dal gioco" "Uscire al desktop|Uscire dal gioco"
+        "Sair para a Área de Trabalho|Sair do jogo")
+    string(REPLACE "|" ";" pair "${pair}")
+    list(GET pair 0 from)
+    list(GET pair 1 to)
+    string(REPLACE "\"main.exit_desktop\": \"${from}\"" "\"main.exit_desktop\": \"${to}\"" OPENSHAO_MENU_TEXT "${OPENSHAO_MENU_TEXT}")
+    string(REPLACE "\"main.exit_confirm\": \"${from}" "\"main.exit_confirm\": \"${to}" OPENSHAO_MENU_TEXT "${OPENSHAO_MENU_TEXT}")
+    string(REPLACE "\"main.exit_confirm\": \"¿${from}" "\"main.exit_confirm\": \"¿${to}" OPENSHAO_MENU_TEXT "${OPENSHAO_MENU_TEXT}")
+endforeach()
 configure_file("${UPSTREAM}/resources/menu_text_data.h.in" "${CMAKE_CURRENT_BINARY_DIR}/menu/menu_text_data.h" @ONLY)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${UPSTREAM}/resources/menu_text.json")
 set_source_files_properties("${U}/menu_text.cpp" PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR}/menu")
@@ -105,7 +132,7 @@ if(PORT_PLATFORM STREQUAL "headless")
         "${H}/app_headless.cpp" "${H}/main_test.cpp" "${H}/null_audio.cpp" "${H}/null_backend.cpp" "${PORTED}/pad_script.cpp"
         "${H}/reference_renderer.cpp" ${GAME_OBJECTS})
     target_include_directories(shaolin_headless PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/port/common" "${UPSTREAM}/src"
-        "${PORTED}/include" "${SDK}/runtime" "${GEN}" "${H}" "${H}/compat")
+        "${SDK}/runtime" "${GEN}" "${H}" "${H}/compat")
     target_compile_definitions(shaolin_headless PRIVATE XBE_RAW_VERTICES=0 XBE_RENDER_THREAD=0)
     target_compile_options(shaolin_headless PRIVATE -fno-strict-aliasing -O1 -g)
     target_link_libraries(shaolin_headless PRIVATE tomlplusplus::tomlplusplus ${UPSTREAM_MOD_LIBS} pthread)
@@ -126,7 +153,7 @@ if(PORT_PLATFORM STREQUAL "linux-vk")
         "${CMAKE_CURRENT_SOURCE_DIR}/port/linux/test_hooks.cpp"
         "${H}/app_headless.cpp" "${H}/null_audio.cpp" "${PORTED}/pad_script.cpp" ${GAME_OBJECTS})
     target_include_directories(shaolin_vk PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/port" "${CMAKE_CURRENT_SOURCE_DIR}/port/common"
-        "${UPSTREAM}/src" "${PORTED}/include" "${SDK}/runtime" "${GEN}" "${H}" "${H}/compat")
+        "${UPSTREAM}/src" "${SDK}/runtime" "${GEN}" "${H}" "${H}/compat")
     target_compile_definitions(shaolin_vk PRIVATE XBE_RAW_VERTICES=$<BOOL:${RAW_VERTICES}> ENABLE_HLSL=1)
     target_compile_options(shaolin_vk PRIVATE -fno-strict-aliasing -O1 -g)
     target_include_directories(shaolin_vk SYSTEM PRIVATE "${VULKAN_INCLUDE}")
@@ -144,7 +171,7 @@ if(PORT_PLATFORM STREQUAL "switch")
     # newlib's limits.h gives C++ no LLONG_MAX unless <climits> came first, and Lua's luaconf.h needs it
     set_source_files_properties("${UPSTREAM}/src/mods/routines.cpp" PROPERTIES COMPILE_OPTIONS "-include;climits")
     target_include_directories(shaolin_nx PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/port" "${CMAKE_CURRENT_SOURCE_DIR}/port/common"
-        "${UPSTREAM}/src" "${PORTED}/include" "${SDK}/runtime" "${GEN}" "${SDK}/harness/compat")
+        "${UPSTREAM}/src" "${SDK}/runtime" "${GEN}" "${SDK}/harness/compat")
     target_compile_definitions(shaolin_nx PRIVATE PORT_VERSION="${PROJECT_VERSION}" XBE_RAW_VERTICES=$<BOOL:${RAW_VERTICES}> XBE_RENDER_THREAD=$<BOOL:${NX_RENDER_THREAD}> ENABLE_HLSL=1)
     target_include_directories(shaolin_nx SYSTEM PRIVATE "${NVK_SDK}/include")
     # the Thorhax intro, the startup video; port/nx/compat gives it the log macros it is written with
@@ -167,7 +194,7 @@ if(PORT_PLATFORM STREQUAL "switch")
         glslang::glslang-default-resource-limits
         -Wl,--start-group "${NVK_LIB}" expat zstd z nx m -Wl,--end-group)
     # NVK's Rust libraries each bundle the Rust runtime
-    target_link_options(shaolin_nx PRIVATE -Wl,--wrap=abort -pthread -Wl,--gc-sections -Wl,--allow-multiple-definition -Wl,--no-relax)
+    target_link_options(shaolin_nx PRIVATE -Wl,--wrap=abort -Wl,--wrap=rename -pthread -Wl,--gc-sections -Wl,--allow-multiple-definition -Wl,--no-relax)
     set_target_properties(shaolin_nx PROPERTIES OUTPUT_NAME shaolinmonks)
     # switch.specs finds libnx's linker script through the environment
     set_property(TARGET shaolin_nx PROPERTY RULE_LAUNCH_LINK "${CMAKE_COMMAND} -E env DEVKITPRO=${DEVKITPRO}")

@@ -1,6 +1,7 @@
 // POSIX calls the runtime makes that newlib on Horizon lacks
 #include <errno.h>
 #include <switch.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -33,6 +34,20 @@ ssize_t pread(int fd, void* buf, size_t count, off_t offset) {
     const ssize_t got = read(fd, buf, count);
     lseek(fd, was, SEEK_SET);
     return got;
+}
+
+// rename over an existing file, as POSIX has it: the SD card's file system refuses to, and upstream's code writes its
+// files to a temporary and renames it over the old one (std::filesystem::rename too comes here, -Wl,--wrap=rename)
+int __real_rename(const char* from, const char* to);
+int __wrap_rename(const char* from, const char* to) {
+    if (__real_rename(from, to) == 0) return 0;
+    const int error = errno;
+    struct stat a, b;
+    if (stat(from, &a) || stat(to, &b) || !S_ISREG(a.st_mode) || !S_ISREG(b.st_mode) || unlink(to)) {
+        errno = error;
+        return -1;
+    }
+    return __real_rename(from, to);
 }
 
 // relaunching into another executable: Shaolin Monks' bonus games are not supported on this host

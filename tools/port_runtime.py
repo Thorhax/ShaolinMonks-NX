@@ -214,9 +214,9 @@ static uint32_t Fnv(const void* p, size_t n) {
 ''', "files.cpp")
     files = replace_once(files, '''    W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, info);
-    LOG_FIRST(400, "open %s", name.c_str());''', '''    W32(handle_out, NewHandle(f));
+    LOG_FIRST(3000, "open guest file %s", SafeGuestName(name).c_str());''', '''    W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, info);
-    LOG_FIRST(400, "open %s", name.c_str());
+    LOG_FIRST(3000, "open guest file %s", SafeGuestName(name).c_str());
     SAVE_TRACE(f->host, "create %s mode %s disposition %u access %08X options %08X -> handle %08X", name.c_str(), mode,
                disposition, a[1], options, R32(handle_out));''', "files.cpp")
     files = replace_once(files, '''    (void)options;
@@ -315,108 +315,42 @@ bool RawReadable(const State& s, const Inputs& inputs) {""", "vertex.cpp")
         raise ValueError(f"vertex.cpp: {n} index inserts, 9 expected")
     write("vertex.cpp", '#include "port_compat.h"\n' + strip_win32_includes(vertex))
 
-    for name in ("boot.cpp", "xapi.cpp", "dsound.cpp"):
-        write(name, '#include "port_compat.h"\n' + strip_win32_includes((args.adapted / name).read_text(encoding="utf-8")))
+    write("dsound.cpp", '#include "port_compat.h"\n' + strip_win32_includes((args.adapted / "dsound.cpp").read_text(encoding="utf-8")))
+    # the pads as upstream's controller.cpp hands them over, which this host's input does not go through: in a
+    # Survival session Start pauses as Select does. Upstream's save pages, which hold an answer here, stay out.
+    xapi = strip_win32_includes((args.adapted / "xapi.cpp").read_text(encoding="utf-8"))
+    xapi = replace_once(xapi, "namespace openshao::save_pages { void HoldAnswer(input::Pad& pad); }\n", "", "xapi.cpp")
+    xapi = replace_once(xapi, "    openshao::save_pages::HoldAnswer(p);\n",
+                        "    if (p.connected) p.buttons = openshao::survival::PauseButtons(p.buttons, openshao::survival::ActiveSession());\n",
+                        "xapi.cpp")
+    write("xapi.cpp", '#include "port_compat.h"\n#include "survival_session.h"\n' + xapi)
+    # upstream's Discord presence and crash report monitor stay on the PC
+    boot = strip_win32_includes((args.adapted / "boot.cpp").read_text(encoding="utf-8"))
+    boot = replace_once(boot, "    openshao::discord::Shutdown();\n", "", "boot.cpp")
+    boot = replace_once(boot, "    openshao::support::StopMonitor();\n", "", "boot.cpp")
+    write("boot.cpp", '#include "port_compat.h"\n' + boot)
 
-    # Headers the SDK fixes below change, written to include/ ahead of the SDK's own in every target's include path.
-    def write_header(name, text):
-        (args.out / "include" / name).parent.mkdir(parents=True, exist_ok=True)
-        write("include/" + name, text)
+    # upstream's main menu rows: Konfigure Recompilation opens the quick menu here, where upstream opens its PC settings
+    # pages (display modes, keyboard and mouse); Game Mode and Enhancements stay as they are
+    recomp = (args.upstream / "src/recomp_settings.cpp").read_text(encoding="utf-8")
+    recomp = replace_once(recomp, "        else if(pressed&0x40) {\n            return_row=selected;exit_prompt=selected==MainExitRow;\n",
+                          "        else if((pressed&0x40) && selected==MainRecompRow){Sound(ctx,0x6CA3B8);port::menu::OpenFromGame();}\n"
+                          "        else if(pressed&0x40) {\n            return_row=selected;exit_prompt=selected==MainExitRow;\n",
+                          "recomp_settings.cpp")
+    write("recomp_settings.cpp", '#include "quick_menu.h"\n' + recomp)
 
-    # XboxXBERecomp 7beac8c, "Alpha test only when enabled": a pixel shader that can discard turns off early depth
-    # tests, so it discards only with the alpha test on
-    shaders_h = (args.sdk / "runtime/gpu/shaders.h").read_text(encoding="utf-8")
-    shaders_h = replace_once(shaders_h, "    uint32_t quad = 0;       // a screen quad: QuadHlsl\n",
-                             "    uint32_t quad = 0;       // a screen quad: QuadHlsl\n"
-                             "    uint32_t alphatest = 0;  // alpha test on: only then may the shader discard, which turns off early depth tests\n",
-                             "shaders.h")
-    write_header("gpu/shaders.h", shaders_h)
+    # upstream's pipeline precompile learns the pipelines each room's models need while it loads, for a renderer that
+    # builds them ahead (its D3D12 and Vulkan ones). This port's renderer does not: the walk over every model is skipped.
+    assets = (args.upstream / "src/pipeline_assets.cpp").read_text(encoding="utf-8")
+    assets = replace_once(assets, "void BeginPipelineLoad() {\n    if (load_batch) return;\n",
+                          "void BeginPipelineLoad() {\n    if (load_batch || !ActiveDescriber()) return;\n", "pipeline_assets.cpp")
+    assets = replace_once(assets, "void CapturePipelineObject(uint32_t object, uint32_t source_type) {\n    if (!Valid(object, 0x58)) return;\n",
+                          "void CapturePipelineObject(uint32_t object, uint32_t source_type) {\n"
+                          "    if (!ActiveDescriber() || !Valid(object, 0x58)) return;\n", "pipeline_assets.cpp")
+    write("pipeline_assets.cpp", assets)
+
     shaders = strip_win32_includes((args.adapted / "shaders.cpp").read_text(encoding="utf-8"))
-    shaders = replace_once(shaders, "    k.two_sided = s.rs[kRsTwoSidedLighting] != 0;\n",
-                           "    k.two_sided = s.rs[kRsTwoSidedLighting] != 0;\n    k.alphatest = s.simple[kMAlphaTestEnable >> 2] != 0;\n",
-                           "shaders.cpp")
-    shaders = replace_once(shaders, '    body += "alphatest(outc.a);\\n" + Hooks().Output() + "return outc;\\n}\\n";\n',
-                           '    if (k.alphatest) body += "alphatest(outc.a);\\n";\n'
-                           '    body += Hooks().Output() + "return outc;\\n}\\n";\n', "shaders.cpp")
     write("shaders.cpp", '#include "port_compat.h"\n' + shaders)
-
-    # XboxXBERecomp 3a084a5, "Kernel waits wake only the threads blocked on the object": a signal woke every blocked
-    # wait in the title, which kept its file reader threads busy
-    kernel_h = (args.sdk / "runtime/kernel/kernel.h").read_text(encoding="utf-8")
-    kernel_h = replace_once(kernel_h, "struct Object {\n", "struct Waiter;\n\nstruct Object {\n", "kernel.h")
-    kernel_h = replace_once(kernel_h, "    uint32_t recursion = 0;\n    std::string name;\n",
-                            "    uint32_t recursion = 0;\n    std::vector<Waiter*> waiters;  // Waits blocked on it\n    std::string name;\n",
-                            "kernel.h")
-    write_header("kernel/kernel.h", kernel_h)
-    objects = (args.sdk / "runtime/kernel/objects.cpp").read_text(encoding="utf-8")
-    objects = replace_once(objects, "namespace kernel {\n\nnamespace {\n\nstd::mutex g_dispatch;\nstd::condition_variable g_cv;\n",
-                           "namespace kernel {\n\nstruct Waiter {\n    std::condition_variable cv;\n};\n\nnamespace {\n\n"
-                           "std::mutex g_dispatch;\nstd::vector<Waiter*> g_waiters;  // every blocked Wait, for SignalChanged\n", "objects.cpp")
-    objects = replace_once(objects, "void SignalChanged() { g_cv.notify_all(); }\n", """void SignalChanged() {
-    for (Waiter* w : g_waiters) w->cv.notify_one();
-}
-
-// only the threads blocked on this object; waking every waiter on each signal kept file reader threads busy
-static void Wake(Object& o) {
-    for (Waiter* w : o.waiters) w->cv.notify_one();
-}
-
-// a Wait's place on its objects' waiter lists while it blocks, under the dispatcher lock
-struct Queued {
-    const std::vector<ObjectRef>& objs;
-    Waiter w;
-    bool on = false;
-    void Add() {
-        for (auto& o : objs) {
-            if (o) o->waiters.push_back(&w);
-        }
-        g_waiters.push_back(&w);
-        on = true;
-    }
-    void Remove() {
-        if (!on) return;
-        for (auto& o : objs) {
-            if (o) std::erase(o->waiters, &w);
-        }
-        std::erase(g_waiters, &w);
-        on = false;
-    }
-    ~Queued() { Remove(); }
-};
-""", "objects.cpp")
-    objects = replace_once(objects, "    std::unique_lock<std::mutex> lock(g_dispatch);\n    for (;;) {\n",
-                           "    std::unique_lock<std::mutex> lock(g_dispatch);\n    Queued queued{objs};\n    for (;;) {\n", "objects.cpp")
-    objects = replace_once(objects, "            if (pending) {\n                lock.unlock();\n",
-                           "            if (pending) {\n                queued.Remove();\n                lock.unlock();\n", "objects.cpp")
-    objects = replace_once(objects, "            g_cv.wait_for(lock, nanoseconds(std::min<int64_t>(deadline - now, 50000000)));\n",
-                           "            if (!queued.on) queued.Add();\n"
-                           "            queued.w.cv.wait_for(lock, nanoseconds(std::min<int64_t>(deadline - now, 50000000)));\n", "objects.cpp")
-    objects = replace_once(objects, "            g_cv.wait_for(lock, milliseconds(50));\n",
-                           "            if (!queued.on) queued.Add();\n            queued.w.cv.wait_for(lock, milliseconds(50));\n", "objects.cpp")
-    objects = replace_once(objects, "            SetSignal(*e.timer, 1);\n            g_cv.notify_all();\n",
-                           "            SetSignal(*e.timer, 1);\n            Wake(*e.timer);\n", "objects.cpp")
-    if objects.count("g_cv.notify_all();") != 4:
-        raise ValueError("objects.cpp: the signals of SetEvent, PulseEvent, ReleaseSemaphore and ReleaseMutant changed")
-    objects = objects.replace("g_cv.notify_all();", "Wake(o);")
-    write("objects.cpp", objects)
-
-    # XboxXBERecomp 16bf1cd, "Cut render and game thread work per draw and per bind": the format table by byte
-    texture = (args.sdk / "runtime/gpu/texture.cpp").read_text(encoding="utf-8")
-    texture = replace_once(texture, """const FormatInfo& Format(uint32_t f) {
-    for (auto& e : kFormats)
-        if (e.id == f) return e.info;
-    return kUnknown;
-}""", """// by format byte: asked many times a draw
-const FormatInfo& Format(uint32_t f) {
-    static const auto table = [] {
-        std::array<const FormatInfo*, 256> t;
-        t.fill(&kUnknown);
-        for (auto& e : kFormats) t[e.id] = &e.info;
-        return t;
-    }();
-    return f < table.size() ? *table[f] : kUnknown;
-}""", "texture.cpp")
-    write("texture.cpp", "#include <array>\n" + texture)
 
     d3d = strip_win32_includes((args.adapted / "d3d8.cpp").read_text(encoding="utf-8"))
     d3d = replace_once(d3d, "const uint64_t tick=GetTickCount64();", "const uint64_t tick=port::TickMs();", "d3d8.cpp")
@@ -425,11 +359,11 @@ const FormatInfo& Format(uint32_t f) {
                        "d3d8.cpp")
     # writes to the simple states and vertex shader constants mark what the render thread compares (port/common/state_dirty.h)
     d3d, n = re.subn(r"g_state\.simple\[([^\]]+)\]", r"port::state::Simple(g_state, \1)", d3d)
-    if n != 5:
-        raise ValueError(f"d3d8.cpp: {n} simple state writes, 5 expected")
+    if n != 1:
+        raise ValueError(f"d3d8.cpp: {n} simple state writes, 1 expected (SetSimple)")
     d3d, n = re.subn(r"g_state\.vsc\[([^\]]+)\]", r"port::state::Vsc(g_state, \1)", d3d)
-    if n != 7:
-        raise ValueError(f"d3d8.cpp: {n} vertex shader constant writes, 7 expected")
+    if n != 8:
+        raise ValueError(f"d3d8.cpp: {n} vertex shader constant writes, 8 expected")
     d3d = replace_once(d3d, "    gpu::ApplyPixelConstants(g_state, reg, n);\n",
                        "    gpu::ApplyPixelConstants(g_state, reg, n);\n    port::state::PixelConstants();\n", "d3d8.cpp")
     d3d = replace_once(d3d, "    g_state = gpu::State{};\n", "    g_state = gpu::State{};\n    port::state::All();\n", "d3d8.cpp")
@@ -450,8 +384,8 @@ const FormatInfo& Format(uint32_t f) {
             n += 1
         lines.append(line)
         at += len(line.split("\n")[0]) + 1
-    if n != 27:
-        raise ValueError(f"d3d8.cpp: {n} state writes to mark, 27 expected")
+    if n != 28:
+        raise ValueError(f"d3d8.cpp: {n} state writes to mark, 28 expected")
     d3d = "\n".join(lines)
     # the deferred render and texture stage states, copied from the title's memory before each draw, marked only where
     # they changed
@@ -476,16 +410,6 @@ const FormatInfo& Format(uint32_t f) {
             port::state::Mark(g_state, g_state.tss[s][i]);
         }
 """, "d3d8.cpp")
-    # XboxXBERecomp 16bf1cd: binding the same texture, stream or indices again skips the AddRef and Release that
-    # would cancel out
-    for new, old, between in (("tex", "old", "    SetDev(kDevTextures + stage * 4, tex);\n"),
-                              ("vb", "old", "    W32(kStreams + n * kStreamSize + XDK_Stream_Stride, stride);\n"
-                                            "    W32(kStreams + n * kStreamSize + XDK_Stream_Buffer, vb);\n"),
-                              ("ib", "old", "    W32(kIndexData, ib ? R32(ib + 4) : 0);\n    SetDev(kDevIndexBuffer, ib);\n"
-                                            "    SetDev(kDevBaseVertex, a[1]);\n")):
-        d3d = replace_once(d3d, f"    AddRef(ctx, {new});\n{between}    Release(ctx, {old});\n",
-                           f"    bool same = {new} == {old};\n    if (!same) AddRef(ctx, {new});\n{between}"
-                           f"    if (!same) Release(ctx, {old});\n", "d3d8.cpp")
     write("d3d8.cpp", '#include "port_compat.h"\n#include "cheats.h"\n#include "state_dirty.h"\n' + d3d)
 
     # upstream's settings model, with its Win32 file replacement swapped for the port's
@@ -513,10 +437,12 @@ const FormatInfo& Format(uint32_t f) {
         "    return !std::memcmp(a, b, n);\n"
         "#endif\n"
         "}\n") + rt[end:]
+    # the port's marks cover simple as well (SetSimple marks it), so it goes back among the ranges the walk below sends
+    rt = replace_once(rt, "        {At(s, &s.rs), At(s, &s.textures) - At(s, &s.rs)},  // simple goes by SendSimple\n",
+                      "        {At(s, &s.simple), At(s, &s.textures) - At(s, &s.simple)},\n", "render_thread.cpp")
     rt = replace_once(rt,
-        "        for (const Range& r : ranges_)\n"
-        "            for (size_t off = r.off, end = r.off + r.len; off < end; off += 64)\n"
-        "                Delta(reinterpret_cast<const uint8_t*>(&sent_) + off, now + off, std::min<size_t>(64, end - off));\n",
+        "        SendSimple(s);\n"
+        "        for (const Range& r : ranges_) DeltaRange(r, now);\n",
         r"""        for (const Range& r : ranges_) {
             const size_t end = r.off + r.len;
             // only the range's 64 byte steps that overlap a marked piece, found a word of marks at a time

@@ -275,13 +275,14 @@ void OnFrame(X86Context& ctx) {
 }  // namespace port::cheats
 
 // the title's health setter (thiscall: the character in ecx, the new value on the stack): a player's health does
-// not go down while invincible, so no hit within a frame can bring it to zero
-X86_EXTERN_FUNC(__imp__sub_00153CD0);
+// not go down while invincible, so no hit within a frame can bring it to zero. Upstream's difficulties hook it as well
+// (Monk's healing rules), built under another name (CMakeLists.txt) and called from here.
+X86_EXTERN_FUNC(openshao_difficulty_health_setter);
 X86_FUNC(sub_00153CD0) {
     const int player = port::cheats::PlayerOf(ctx.ecx);
     if (player >= 0 && port::cheats::Enabled(port::cheats::kInvincible, player)) {
         const uint32_t max = kernel::R32(ctx.ecx + 0x370);
         if (kernel::R32(ctx.esp + 4) < max) kernel::W32(ctx.esp + 4, max);
     }
-    __imp__sub_00153CD0(ctx, base);
+    openshao_difficulty_health_setter(ctx, base);
 }
