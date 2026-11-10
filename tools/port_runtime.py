@@ -316,6 +316,25 @@ bool RawReadable(const State& s, const Inputs& inputs) {""", "vertex.cpp")
     write("vertex.cpp", '#include "port_compat.h"\n' + strip_win32_includes(vertex))
 
     write("dsound.cpp", '#include "port_compat.h"\n' + strip_win32_includes((args.adapted / "dsound.cpp").read_text(encoding="utf-8")))
+    # Upstream's mixer (included by dsound.cpp, which finds this copy first in its own folder). In stereo it sends a 3D
+    # voice at full level to the front and rear 3D bins and to the centre, which the fold-down adds up: about 8 dB over
+    # the voice's own volume. This title places none of its 3D voices and sets their distance as the voice volume, so
+    # far enemies' footsteps came through loud. In stereo a 3D voice goes to the front speakers at its volume, panned,
+    # as before 0.4.0; its reverb send stays. Surround output keeps upstream's equal power panning.
+    mixer = (args.upstream / "src/audio_mixer.inl").read_text(encoding="utf-8")
+    mixer = replace_once(mixer, """        } else switch (slot.bin) {
+        case 0: case 4: case 6: case 8: spatial *= std::min(1.f, 1.f-pan); break;
+        case 1: case 5: case 7: case 9: spatial *= std::min(1.f, 1.f+pan); break;
+        }
+""", """        } else switch (slot.bin) {
+        case 6: slot.bin = 0; spatial *= std::min(1.f, 1.f-pan); break;
+        case 7: slot.bin = 1; spatial *= std::min(1.f, 1.f+pan); break;
+        case 2: case 8: case 9: spatial = 0; break;
+        case 0: case 4: spatial *= std::min(1.f, 1.f-pan); break;
+        case 1: case 5: spatial *= std::min(1.f, 1.f+pan); break;
+        }
+""", "audio_mixer.inl")
+    write("audio_mixer.inl", mixer)
     # the pads as upstream's controller.cpp hands them over, which this host's input does not go through: in a
     # Survival session Start pauses as Select does. Upstream's save pages, which hold an answer here, stay out.
     xapi = strip_win32_includes((args.adapted / "xapi.cpp").read_text(encoding="utf-8"))
