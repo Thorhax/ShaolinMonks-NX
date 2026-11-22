@@ -6,9 +6,13 @@
 // The Nexus gets upstream's debug rows: Unlock All Kontent (for the session, never in the save), the players' damage
 // multiplier, a health refill and a Player 2 toggle that takes effect at the next map. The room loader hook at the end
 // is upstream's ed_nexus.cpp, which Survival Mode's sessions go through as well.
+// Where the game mode offers it, the pause menu also has upstream's Photo Mode row (after the title's three), and the
+// text hook gives the extra fighters' Moves pages their captions, as upstream's does.
 #include <array>
 #include <string>
+#include <unordered_map>
 
+#include "campaign_moves.h"
 #include "controller.h"
 #include "core/log.h"
 #include "cpu/x86_context.h"
@@ -18,6 +22,7 @@
 #include "kernel/kernel.h"
 #include "launcher.h"
 #include "menu_text.h"
+#include "photo_mode.h"
 #include "survival_mode.h"
 #include "survival_session.h"
 
@@ -45,9 +50,12 @@ constexpr std::array<uint32_t, 4> DamageSteps{1, 2, 4, 8};
 unsigned damage_step = 0;
 constexpr uint32_t KontentListBytes = (DebugRows + 1) * 8;
 constexpr uint32_t DebugTextBytes = 24;
-// the title's three pause rows, the Nexus and the terminator
-constexpr uint32_t PauseRows = 4;
-constexpr uint32_t PauseRootBytes = (PauseRows + 1) * 8;
+// the title's three pause rows, then Photo Mode where the game mode offers it and the Nexus once it is unlocked
+constexpr uint32_t PhotoLabel = 0xFFFFFFFA;
+constexpr uint32_t PhotoRow = 3;
+constexpr uint32_t MaxPauseRows = 5;
+constexpr uint32_t PauseRootBytes = (MaxPauseRows + 1) * 8;
+constexpr uint32_t PhotoTextBytes = 64;
 uint32_t pause_storage = 0;
 
 void WriteGuestText(uint32_t address, const char* text, unsigned bytes) {
@@ -103,12 +111,14 @@ bool EnsureMenuStorage() {
 
 struct PauseMenuState {
     uint32_t list = 0, original_rows = 0, original_count = 0;
+    uint32_t photo_row = ~0u;
 };
 PauseMenuState pause_menu;
 
-// the title's three pause rows and the Nexus after them, once it is unlocked
+// the title's three pause rows, Photo Mode and the Nexus after them
 bool InstallPauseList(X86Context& ctx) {
-    if (!Unlocked()) return false;
+    const bool photo = openshao::photo_mode::Available();
+    if (!Unlocked() && !photo) return false;
     const auto saved = ctx;
     ctx.ecx = 0x4EF3C8;
     const uint32_t list = kernel::CallGuest(ctx, 0x1120D, {0x49F924});
@@ -131,16 +141,33 @@ bool InstallPauseList(X86Context& ctx) {
              original_count, original_rows ? kernel::R32(original_rows) : 0);
         return false;
     }
-    if (!pause_storage) pause_storage = mem::AllocSystem(PauseRootBytes);
-    if (!pause_storage || !EnsureMenuStorage()) return false;
-    pause_menu = {list, original_rows, original_count};
+    if (!pause_storage) pause_storage = mem::AllocSystem(PauseRootBytes + PhotoTextBytes);
+    if (!pause_storage || (Unlocked() && !EnsureMenuStorage())) return false;
+    pause_menu = {list, original_rows, original_count, photo ? PhotoRow : ~0u};
     for (unsigned i = 0; i < 6; ++i) kernel::W32(pause_storage + i * 4, kernel::R32(original_rows + i * 4));
-    PausePair(pause_storage + 24, MenuLabel, 0x135C6);
-    PauseTerminator(pause_storage + PauseRows * 8);
+    uint32_t rows = 3;
+    if (photo) {
+        WriteMenuText(pause_storage + PauseRootBytes, Localized("photo.mode"), PhotoTextBytes);
+        PausePair(pause_storage + rows++ * 8, PhotoLabel);
+    }
+    if (Unlocked()) PausePair(pause_storage + rows++ * 8, MenuLabel, 0x135C6);
+    PauseTerminator(pause_storage + rows * 8);
     kernel::W32(list + 0x54, pause_storage);
-    kernel::W32(list + 0x64, PauseRows);
-    LOGI("Gameplay pause expanded: list=%08X rows=%u", list, PauseRows);
+    kernel::W32(list + 0x64, rows);
+    LOGI("Gameplay pause expanded: list=%08X rows=%u", list, rows);
     return true;
+}
+
+// the Moves pages' captions: native widgets keep the pointers, so each text gets guest storage of its own once
+uint32_t CachedText(std::string text) {
+    static std::unordered_map<std::string, uint32_t> texts;
+    if (const auto found = texts.find(text); found != texts.end()) return found->second;
+    const auto bytes = (uint32_t(text.size()) + 4) & ~3u;
+    const auto storage = mem::AllocSystem(bytes);
+    if (!storage) return 0;
+    WriteGuestText(storage, text.c_str(), bytes);
+    texts.emplace(std::move(text), storage);
+    return storage;
 }
 
 void AddKontentAction(X86Context& ctx) {
@@ -209,6 +236,9 @@ void UpdateHeldInput(X86Context& ctx) {
 
 bool Unlocked() { return sequence.Unlocked(); }
 bool GameplayPaused() { return in_pause; }
+// Photo Mode opens over the Select pause's own rows; this host has no settings pages under them
+bool PauseRootShown() { return in_pause && !in_nexus; }
+void DrawPausePageIndicator(X86Context&) {}
 bool KontentUnlocked() { return kontent_unlocked; }
 float PlayerDamage() { return Unlocked() ? float(DamageSteps[damage_step]) : 1.f; }
 void FrontendInput(X86Context& ctx, uint8_t*) {
@@ -255,6 +285,19 @@ X86_FUNC(sub_000142EB) {
     const auto saved = ctx;
     kernel::CallGuest(ctx, 0x135C6, {});
     ctx = saved;
+}
+// the Select list's handler: Photo Mode's row opens it over the pause, which returns zero for accept as retail does
+X86_EXTERN_FUNC(__imp__sub_00015687);
+X86_FUNC(sub_00015687) {
+    const uint32_t list = kernel::R32(ctx.esp + 4), event = kernel::R32(ctx.esp + 8);
+    if (nexus::in_pause && !nexus::in_nexus && event == 4 && list && list == nexus::pause_menu.list &&
+        nexus::pause_storage && kernel::R32(list + 0x54) == nexus::pause_storage &&
+        kernel::R32(list + 0x6C) == nexus::pause_menu.photo_row) {
+        openshao::photo_mode::OpenFromMenu();
+        kernel::Return(ctx, 0, 0);
+        return;
+    }
+    __imp__sub_00015687(ctx, base);
 }
 X86_EXTERN_FUNC(__imp__sub_00013B4D);
 X86_FUNC(sub_00013B4D) {
@@ -318,6 +361,10 @@ X86_FUNC(sub_00015C6D) {
 X86_EXTERN_FUNC(__imp__sub_00016992);
 X86_FUNC(sub_00016992) {
     const uint32_t label = kernel::R32(ctx.esp + 4);
+    if (nexus::pause_storage && label == nexus::PhotoLabel) {
+        kernel::Return(ctx, nexus::pause_storage + nexus::PauseRootBytes, 0);
+        return;
+    }
     if (nexus::kontent_menu && label == nexus::MenuLabel) {
         kernel::Return(ctx, nexus::kontent_menu + nexus::KontentListBytes + 2 * nexus::DebugTextBytes, 0);
         return;
@@ -341,7 +388,32 @@ X86_FUNC(sub_00016992) {
         kernel::Return(ctx, text, 0);
         return;
     }
+    // the extra fighters' Moves pages (upstream's ed_nexus_hooks.inl): their titles and captions
+    std::string corrected;
+    if (openshao::campaign_moves::ReferenceCaption(label, corrected)) {
+        std::string title;
+        if (const auto key = openshao::campaign_moves::ReferenceTranslationKey(label); !key.empty())
+            title = nexus::Localized(key);
+        if (const auto source = openshao::campaign_moves::ReferenceTitleSource(label)) {
+            const auto saved = ctx;
+            const auto native = kernel::CallGuest(ctx, 0x16992, {source});
+            ctx = saved;
+            openshao::campaign_moves::LocalizedReferenceTitle(native, title);
+        }
+        if (!title.empty()) corrected.replace(0, corrected.find('\n'), title);
+        if (const auto text = nexus::CachedText(std::move(corrected))) {
+            kernel::Return(ctx, text, 0);
+            return;
+        }
+        const auto argument = ctx.esp + 4;
+        kernel::W32(argument, 511);
+        __imp__sub_00016992(ctx, base);
+        kernel::W32(argument, label);
+        return;
+    }
     __imp__sub_00016992(ctx, base);
+    if (openshao::campaign_moves::CorrectCaption(label, ctx.eax, corrected))
+        if (const auto text = nexus::CachedText(std::move(corrected))) ctx.eax = text;
 }
 
 // Debug Player 2 (upstream's ed_nexus.cpp): the game mode at state + 0x88 (0 solo, 1 Ko-op, 2 Versus), from which

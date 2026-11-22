@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(ShaolinMonksNX VERSION 0.4.1 LANGUAGES C CXX)
+project(ShaolinMonksNX VERSION 0.5.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -100,6 +100,11 @@ list(APPEND SHAOLIN_SOURCES "${U}/aspect_hooks.cpp" "${U}/difficulty.cpp" "${U}/
     "${U}/save_pages_book.cpp" "${U}/audio_flags.cpp" "${U}/audio_options.cpp"
     "${U}/pipeline_precompile.cpp" "${U}/pipeline_room.cpp" "${PORTED}/pipeline_assets.cpp"
     "${U}/scorpion_preview_audio.cpp" "${U}/scorpion_preview_adx.cpp" "${U}/scorpion_preview_mix.cpp")
+# 0.6.0: the eight-fighter campaign (selection, the Moves pages, finishers, proportions), Enhanced Camera, Photo Mode,
+# the Kontent list without the other game's demo and the first shadow light
+list(APPEND SHAOLIN_SOURCES "${U}/fighter_selection.cpp" "${U}/campaign_moves_database.cpp" "${U}/campaign_moves.cpp"
+    "${U}/campaign_finishers.cpp" "${U}/fighter_proportions.cpp" "${U}/camera_angle.cpp" "${PORTED}/photo_mode.cpp"
+    "${U}/kontent_menu.cpp" "${U}/shadow_light.cpp")
 # the port's cheats hook the health setter too, and call upstream's from theirs (port/common/cheats.cpp)
 set_source_files_properties("${U}/difficulty.cpp" PROPERTIES COMPILE_DEFINITIONS "sub_00153CD0=openshao_difficulty_health_setter")
 # the title's audio effects (its DSP's reverb and routing), built as upstream builds them

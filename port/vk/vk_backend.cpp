@@ -44,6 +44,8 @@
 #include "kernel/memory.h"
 #include "bloom_effect_runtime.h"
 #include "launcher.h"
+#include "photo_mode.h"
+#include "photo_mode_effects.h"
 #include "raster_compat.h"
 #include "sfd_filter_compat.h"
 #include "state_dirty.h"
@@ -644,7 +646,12 @@ public:
     void SyncLate(uint32_t data) override;
     bool DeliverLate(uint32_t data) override;
     void RecordLate(uint32_t data) override;
-    void Flush() override { Submit(true); }
+    // the GPU is idle after it: every report asked for so far is written, as a title waiting on one expects
+    // (XboxXBERecomp e867755, through upstream 0.6.0)
+    void Flush() override {
+        Submit(true);
+        DeliverReports();
+    }
     void SetGamma(const uint8_t* ramp) override {
         std::memcpy(ramp_, ramp, sizeof(ramp_));
         ramp_dirty_ = true;
@@ -710,6 +717,7 @@ private:
     VkPipeline FullScreenPipeline(uint64_t key, VkShaderModule vs, VkShaderModule ps, VkFormat color, VkFormat depth,
                                   const VkPipelineColorBlendAttachmentState* blend, bool depth_write);
     VkPipeline EnsureBlitPipeline(VkFormat rtv, bool over);
+    VkPipeline EnsurePhotoPipeline(VkFormat rtv);
     VkPipeline EnsureDepthCopyPipeline();
     VkPipeline EnsurePipeline(const PsoKey& k, VkShaderModule vs, VkShaderModule ps);
     // descriptors
@@ -746,7 +754,7 @@ private:
     void FillTextureConstants(const State& s, const DrawTextures& stages, DrawConstants& c);
     void FillTexelConstants(int i, const TextureDesc& d, const DrawTextures& stages, DrawConstants& c);
     void SetTextureViewsAndSamplers(const State& s, const Assembled& a, DrawTextures& stages, Bindings& b);
-    void StageSamplers(const State& s, const DrawTextures& stages, bool clamp, VkSampler out[4]);
+    void StageSamplers(const State& s, const DrawTextures& stages, bool clamp, bool fixed, VkSampler out[4]);
     void SetViewportScissor(const State& s, uint32_t gw);
     void SetBlendFactorStencilRef(const State& s);
     void DrawGeometry(const Assembled& a);
@@ -1705,6 +1713,18 @@ VkPipeline VulkanBackend::EnsureBlitPipeline(VkFormat rtv, bool over) {
     return FullScreenPipeline(key, vs, ps, rtv, VK_FORMAT_UNDEFINED, &b, false);
 }
 
+// Photo Mode's preview pass (upstream's photo_mode_effects.h), opaque over the swap chain image
+VkPipeline VulkanBackend::EnsurePhotoPipeline(VkFormat rtv) {
+    const uint64_t key = 0x50484F544FULL ^ uint64_t(rtv);
+    if (auto it = blit_psos_.find(key); it != blit_psos_.end()) return it->second;
+    uint64_t h;
+    VkShaderModule vs = Module(openshao::photo_mode::PreviewShader(), "vs", Stage::Vertex, h);
+    VkShaderModule ps = Module(openshao::photo_mode::PreviewShader(), "psmain", Stage::Fragment, h);
+    VkPipelineColorBlendAttachmentState b{};
+    b.colorWriteMask = 0xF;
+    return FullScreenPipeline(key, vs, ps, rtv, VK_FORMAT_UNDEFINED, &b, false);
+}
+
 // DepthCopy's pipeline: writes depth only, always passing
 VkPipeline VulkanBackend::EnsureDepthCopyPipeline() {
     const uint64_t key = ~0ull;
@@ -2377,7 +2397,7 @@ constexpr uint32_t kTexfAnisotropic = 3;
 constexpr uint32_t kTaddressWrap = 1;
 constexpr uint32_t kTaddressClamp = 3;
 
-void VulkanBackend::StageSamplers(const State& s, const DrawTextures& stages, bool clamp, VkSampler out[4]) {
+void VulkanBackend::StageSamplers(const State& s, const DrawTextures& stages, bool clamp, bool fixed, VkSampler out[4]) {
     const uint32_t aniso = app::Get().aniso;
     for (int i = 0; i < 4; i++) {
         const auto& t = s.tss[size_t(i)];
@@ -2397,11 +2417,14 @@ void VulkanBackend::StageSamplers(const State& s, const DrawTextures& stages, bo
             ci.minFilter = ci.magFilter = VK_FILTER_LINEAR;
             ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
         }
-        // clamp: the draw's coordinates all lie in 0..1 (UnitTexcoords), so wrap is read as clamp
-        ci.addressModeU = Address(clamp && t[kTssAddressU] == kTaddressWrap ? kTaddressClamp : t[kTssAddressU]);
-        ci.addressModeV = Address(clamp && t[kTssAddressV] == kTaddressWrap ? kTaddressClamp : t[kTssAddressV]);
+        // clamp: the draw's coordinates all lie in 0..1 (UnitTexcoords), so wrap is read as clamp, unless the fixed
+        // function moves this stage's out of that range with a texture matrix or generates them (XboxXBERecomp 6c63e71)
+        const bool unit = clamp && !(fixed && ((t[kTssTexCoordIndex] >> 16 & 7) || (t[kTssTextureTransformFlags] & 7)));
+        ci.addressModeU = Address(unit && t[kTssAddressU] == kTaddressWrap ? kTaddressClamp : t[kTssAddressU]);
+        ci.addressModeV = Address(unit && t[kTssAddressV] == kTaddressWrap ? kTaddressClamp : t[kTssAddressV]);
         ci.addressModeW = Address(t[kTssAddressW]);
-        ci.mipLodBias = Bits(t[kTssMipLodBias]);
+        // the title can ask past the range the hardware takes (XboxXBERecomp 655fdcd)
+        ci.mipLodBias = std::clamp(Bits(t[kTssMipLodBias]), -props_.limits.maxSamplerLodBias, props_.limits.maxSamplerLodBias);
         ci.minLod = float(t[kTssMaxMipLevel]);
         ci.maxLod = mip ? VK_LOD_CLAMP_NONE : ci.minLod;
         VkSamplerCustomBorderColorCreateInfoEXT border{VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT};
@@ -2805,7 +2828,9 @@ bool UnitTexcoords(const Assembled& a, const DrawTextures& stages) {
     constexpr uint32_t kSmallDrawVertices = 4096;
     if (!a.vertices.empty() || !a.vertex_count || a.vertex_count > kSmallDrawVertices) return false;
     bool any = false;
-    for (int r = 0; r < 16; r++) {
+    // D3DVSDE_POSITION is not a texture coordinate: 2D sprites send x, y in pixels as FLOAT2 (XboxXBERecomp b69b4bb)
+    constexpr int kPositionRegister = 0;
+    for (int r = kPositionRegister + 1; r < 16; r++) {
         const VertexElement& e = a.elements[size_t(r)];
         if (!(a.regs >> r & 1) || e.format != DXGI_FORMAT_R32G32_FLOAT) continue;
         const VertexBuffer& vb = a.buffers[e.buffer];
@@ -2830,7 +2855,8 @@ bool AnyStageWraps(const State& s) {
 // a stage without a texture gets a black texture of its kind
 void VulkanBackend::SetTextureViewsAndSamplers(const State& s, const Assembled& a, DrawTextures& stages, Bindings& b) {
     for (int i = 0; i < 4; i++) b.views[i] = stages.view[i] ? stages.view[i] : null_[stages.info[i].kind].view;
-    StageSamplers(s, stages, AnyStageWraps(s) && UnitTexcoords(a, stages), b.samplers);
+    const bool fixed = !a.pretransformed && !((s.vs_handle & 1) && s.vs && !s.vs->program.empty());
+    StageSamplers(s, stages, AnyStageWraps(s) && UnitTexcoords(a, stages), fixed, b.samplers);
 }
 
 // viewport covers the target, the guest viewport is in the shader; scissor clips to it
@@ -3315,7 +3341,20 @@ void VulkanBackend::DrawFrame(Target* t, Image& out, uint32_t w, uint32_t h) {
         SetViewport({(float(w) - vw) / 2, (float(h) - vh) / 2, vw, vh});
         SetScissor(0, 0, int32_t(w), int32_t(h));
         float uv[4] = {0, 0, 1, 1};
-        Blit(*t, uv, {.gamma = gamma_, .taps = openshao::sfd::PresentationTaps()});
+        // Photo Mode presents through its own pass: the chosen effects and the options panel's backdrop
+        openshao::photo_mode::PreviewParams photo;
+        VkPipeline pso = openshao::photo_mode::Preview(aspect, photo) ? EnsurePhotoPipeline(out.fmt) : VK_NULL_HANDLE;
+        if (pso) {
+            Transition(lut_, Use::Sampled);
+            Alloc cb = Upload(256, 256);
+            const float c[8] = {uv[0], uv[1], uv[2], uv[3], gamma_ ? 1.0f : 0.0f, 0, 1, 1};
+            std::memcpy(cb.cpu, c, sizeof(c));
+            std::memcpy(cb.cpu + sizeof(c), &photo, sizeof(photo));
+            const VkImageView views[4] = {t->view, lut_.view, null_[kTex2D].view, null_[kTex2D].view};
+            DrawFullScreen(pso, cb, views);
+        } else {
+            Blit(*t, uv, {.gamma = gamma_, .taps = openshao::sfd::PresentationTaps()});
+        }
     }
     // the quick menu and status over the frame; ImGui binds its own pipeline and state
     EnsureRendering();
@@ -3396,6 +3435,14 @@ void VulkanBackend::Present(const Surface& front) {
     Target* t = EnsureTarget(front, false);
     const bool cpu = t && LatchCpuWrite(*t);
     if (cpu) UploadTarget(*t, front);
+    // Photo Mode copies the game frame at render size, before the letterbox and the overlay are drawn
+    if (t && openshao::photo_mode::ShotRequested()) {
+        std::vector<uint8_t> photo;
+        Image down;
+        if (!Shrink(*t, t->w, t->h, down) || !ReadBack(down, t->w, t->h, photo)) photo.clear();
+        Release(down);
+        openshao::photo_mode::SaveShot(std::move(photo), t->w, t->h, app::Widescreen() ? 16.0f / 9.0f : 4.0f / 3.0f);
+    }
     if (Tracing())
         LOGI("trace: %llu present %08X%s%s%s", (unsigned long long)presents_, front.data, known ? "" : " (new target)",
              cpu ? " with CPU pixels" : "", t && t->drawn ? " drawn" : "");

@@ -10,6 +10,7 @@
 #include <toml++/toml.hpp>
 
 #include "core/log.h"
+#include "photo_mode.h"
 #include "quick_menu.h"
 #include "nx/platform.h"
 #include "runtime_paths.h"
@@ -124,7 +125,10 @@ Mode Output() { return Desktop(); }
 
 float RenderScale(uint32_t guest_height) {
     if (!guest_height) return 1.0f;
-    return float(Output().height) * float(Get().render_percent) / 100.0f / float(guest_height);
+    float h = float(Output().height) * float(Get().render_percent) / 100.0f;
+    // Photo Mode's High and Maximum photos are rendered larger for a few frames
+    h *= openshao::photo_mode::RenderBoost(h);
+    return h / float(guest_height);
 }
 
 bool Widescreen() { return true; }

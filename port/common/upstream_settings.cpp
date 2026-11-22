@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <string>
 
+#include "core/input.h"
+#include "keyboard.h"
 #include "performance_overlay.h"
 #include "quick_menu.h"
 #include "restart.h"
@@ -31,7 +33,15 @@ std::filesystem::path CurrentGameSource() { return {}; }
 
 namespace openshao::performance {
 bool Visible() { return port::menu::ShowFps(); }
+// the quick menu draws the frame rate (quick_menu.cpp)
+void Draw(double) {}
 }  // namespace openshao::performance
+
+// no keyboard on this host: Photo Mode's pad callback and Enhanced Camera's recenter key find none
+namespace openshao::keyboard {
+void Poll(int, input::Pad&) {}
+bool CameraRecenterDown() { return false; }
+}  // namespace openshao::keyboard
 
 // Upstream's ten pages of save slots stay out of this port: the title's own nine slots are page 1
 namespace openshao::save_pages {

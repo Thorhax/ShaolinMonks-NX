@@ -4,6 +4,7 @@
 #include <cstdio>
 
 #include "core/log.h"
+#include "port_compat.h"
 
 namespace fs = std::filesystem;
 
@@ -56,3 +57,5 @@ void ReportError(const std::wstring& reason, const fs::path& dump) {
 }
 
 }  // namespace openshao::paths
+
+fs::path port::PhotosFolder() { return openshao::paths::Root() / "photos"; }

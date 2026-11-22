@@ -38,6 +38,7 @@ void Save(void* raw) {
     table.insert_or_assign("voice_language", current.voice_language);
     table.insert_or_assign("master_volume", current.master_volume);
     table.insert_or_assign("bloom_effect", current.bloom_effect);
+    table.insert_or_assign("screenshot_notifications", current.screenshot_notifications);
     controller::Save(raw);
     const auto extras = Merge({}, current);
     table.insert_or_assign("enhancements", *extras["enhancements"].as_table());

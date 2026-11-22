@@ -368,11 +368,28 @@ bool RawReadable(const State& s, const Inputs& inputs) {""", "vertex.cpp")
                           "    if (!ActiveDescriber() || !Valid(object, 0x58)) return;\n", "pipeline_assets.cpp")
     write("pipeline_assets.cpp", assets)
 
+    # upstream's Photo Mode saves its PNGs to the user's pictures folder, found through SDL; here they go to the photos
+    # folder beside the saves (port::PhotosFolder)
+    photo = (args.upstream / "src/photo_mode.cpp").read_text(encoding="utf-8")
+    photo = replace_once(photo, "#else\n#include <SDL3/SDL_filesystem.h>\n#endif", "#endif", "photo_mode.cpp")
+    photo = replace_once(photo, """    if (const char* path = SDL_GetUserFolder(SDL_FOLDER_PICTURES)) return std::filesystem::path(path) / "OpenShao";
+    if (const char* home = std::getenv("HOME")) return std::filesystem::path(home) / "Pictures" / "OpenShao";
+    return {};""", "    return port::PhotosFolder();", "photo_mode.cpp")
+    # a Maximum photo renders at four times the screen's height, up to an 8K-tall frame on the PC; here at most 2160
+    # lines, which the console's memory holds beside the game's
+    photo = replace_once(photo, "constexpr float MaxRenderHeight = 4320;", "constexpr float MaxRenderHeight = 2160;",
+                         "photo_mode.cpp")
+    write("photo_mode.cpp", '#include "port_compat.h"\n' + photo)
+
     shaders = strip_win32_includes((args.adapted / "shaders.cpp").read_text(encoding="utf-8"))
     write("shaders.cpp", '#include "port_compat.h"\n' + shaders)
 
     d3d = strip_win32_includes((args.adapted / "d3d8.cpp").read_text(encoding="utf-8"))
     d3d = replace_once(d3d, "const uint64_t tick=GetTickCount64();", "const uint64_t tick=port::TickMs();", "d3d8.cpp")
+    # Photo Mode waits for the renderer before upstream's D3D12 puts its effects under the controls; this renderer
+    # shows them in its present pass (port/vk/vk_backend.cpp), so the wait would only stall each Photo Mode frame
+    d3d = replace_once(d3d, "void FlushRenderer() {\n    std::lock_guard<std::recursive_mutex> lock(d3d::Lock());\n"
+                       "    if (d3d::g_backend) d3d::g_backend->Flush();\n}", "void FlushRenderer() {}", "d3d8.cpp")
     # the quick menu's cheats and save slots act once per frame, on the title's thread (port/common/cheats.h)
     d3d = replace_once(d3d, "HLE_STDCALL(D3DDevice_Swap, 1) {\n", "HLE_STDCALL(D3DDevice_Swap, 1) {\n    port::cheats::OnFrame(ctx);\n",
                        "d3d8.cpp")

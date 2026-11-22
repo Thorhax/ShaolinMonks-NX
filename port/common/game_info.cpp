@@ -2,6 +2,12 @@
 #include "brightness.h"
 #include "launcher.h"
 #include "launcher_settings.h"
+#include "photo_mode.h"
+
+// controller.cpp: player 1's pad, for Enhanced Camera's recenter
+namespace openshao::controller {
+void NotePad(int port, const input::Pad& pad);
+}
 
 const app::GameInfo app::kGame = {
     .title = L"Shaolin Monks NX",
@@ -16,5 +22,10 @@ const app::GameInfo app::kGame = {
     .load = openshao::launcher::Load, .save = openshao::launcher::Save, .init = nullptr,
     .loaded = [] { openshao::brightness::Initialize(openshao::launcher::Current().brightness); },
     .window = nullptr, .message = nullptr, .ui = nullptr,
-    .pad = nullptr, .rumble = nullptr,
+    // Photo Mode takes the pads while it is open
+    .pad = [](int port, input::Pad& pad) {
+        openshao::controller::NotePad(port, pad);
+        openshao::photo_mode::Poll(port, pad);
+    },
+    .rumble = nullptr,
 };

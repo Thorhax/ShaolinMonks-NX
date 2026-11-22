@@ -10,6 +10,7 @@
 #include "backends/imgui_impl_vulkan.h"
 #include "core/log.h"
 #include "imgui.h"
+#include "photo_mode.h"
 #include "quick_menu.h"
 
 namespace vkr::overlay {
@@ -108,7 +109,9 @@ void Draw(VkCommandBuffer cmd, VkFormat format, uint32_t width, uint32_t height)
         g_fps_start = now;
     }
     // nothing on screen: no ImGui frame at all, so play costs nothing
-    if (g_failed || !g_device.device || (!port::menu::Visible() && !port::menu::ShowFps() && !g_backend)) return;
+    if (g_failed || !g_device.device ||
+        (!port::menu::Visible() && !port::menu::ShowFps() && !openshao::photo_mode::Active() && !g_backend))
+        return;
     if (!g_context) CreateContext();
     if (g_backend && format != g_format) {
         ImGui_ImplVulkan_Shutdown();
@@ -132,6 +135,8 @@ void Draw(VkCommandBuffer cmd, VkFormat format, uint32_t width, uint32_t height)
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
     port::menu::Draw(g_fps);
+    // Photo Mode's saved photo notice, in the top right corner
+    openshao::photo_mode::Ui(g_fps);
     ImGui::Render();
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
 }

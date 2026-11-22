@@ -11,8 +11,8 @@ You need your own copy of the game. Nothing of the game is in this repository or
 
 - Runs the story at full speed (60 fps), with audio. Tested in handheld mode; docked and Ko-op are untested.
 - Saving and loading through the game's save shrines.
-- OpenShao's additions: Survival Mode, the Easy and Monk difficulties, restored dialogue and cinematic bars, from the
-  game's main menu.
+- OpenShao's additions: extra fighters in the story, Survival Mode, the Easy and Monk difficulties, Photo Mode,
+  Enhanced Camera, restored dialogue and cinematic bars.
 - A quick menu with cheats and an FPS counter.
 - The game's button prompts show Switch buttons.
 
@@ -42,9 +42,11 @@ The first start writes `settings.toml` there, and makes these folders:
 | `cache/` | compiled shaders and pipelines (the first visit to an area compiles them; later runs are smoother) |
 | `mods/` | mods and language packs, copied from a PC install of OpenShao (see Known limitations) |
 | `logs/` | the log of the last four runs (`shaolin-recomp.log`, then `.1` to `.3`), and `crash.log` after a crash |
+| `photos/` | Photo Mode's pictures, as PNG files |
 
-OpenShao's Survival unlock (`openshao-survival-unlock.dat`) and Monk progress (`openshao-monk-progress.txt`) are kept
-beside them, in `/switch/shaolinmonks/`.
+OpenShao's Survival unlock (`openshao-survival-unlock.dat`) and Monk progress (`openshao-monk.bin`) are kept
+beside them, in `/switch/shaolinmonks/`. A Monk progress file from an earlier version (`openshao-monk-progress.txt`)
+is converted on the first start.
 
 ## Controls
 
@@ -69,15 +71,28 @@ kneel; kneeling also restores health.
 
 ## Main menu
 
-OpenShao adds rows to the game's main menu:
+OpenShao adds to the game's main menu:
 
+- **Single Player** and **Ko-op** start the story with a choice of eight fighters, from your unlocks: unlock Sub-Zero
+  in the story to add Baraka and Kitana, or Scorpion to add Johnny Cage and Reptile. Highlight a locked fighter and
+  press B to see how to unlock them. Their moves are in the **Moves** tab of the Start menu. The difficulty is Easy,
+  Normal, Hard or Monk.
 - **Game Mode** leads to **Survival Mode**: nine levels for one player or Ko-op, with a Versus fighter and a
   difficulty of your choice. It starts locked: find its secret in Story Mode, then save; the unlock then applies to
   every save.
 - **Konfigure Recompilation** opens the quick menu (below).
-- **Enhancements**: Scorpion Unfiltered (press Y to hear it), Restore Lost Dialogue, Cinematic Bars and Improved
-  Difficulty, which adds Easy and Monk to the difficulty choice. Save Changes keeps them in `settings.toml`.
+- **Enhancements**: Scorpion Unfiltered (press Y to hear it), Restore Lost Dialogue, Cinematic Bars and
+  **Enhanced Camera**: in solo play the camera keeps the angle you turn it to, at the camera speed you choose, with
+  optional smoother tracking; click the left stick to recenter it. Save Changes keeps them in `settings.toml`.
 - **Exit Game** closes the game.
+
+## Photo Mode
+
+In the story and Survival Mode (not Versus), press **−** to pause and choose **Photo Mode**. The left stick moves the
+camera and the right stick turns it; ZL and ZR zoom, L and R lower and raise it. **B** takes a photo, **X** hides the
+controls, **Y** opens the options (filter, intensity, vignette, tilt, quality and camera range) and **A** goes back to
+the pause menu. Photos are saved in `/switch/shaolinmonks/photos/`. High and Maximum quality render the photo larger
+for a moment (up to 2160 lines here), which takes a few seconds.
 
 ## Quick menu
 
@@ -103,7 +118,8 @@ while it is open.
 | `[enhancements] scorpion_unfiltered` | upstream's Scorpion Unfiltered, `false` by default |
 | `[enhancements] restore_dialogue` | lost and unused dialogue played at matching story events, `true` by default |
 | `[enhancements] cinematic_bars` | the black bars of the in-game scenes, `false` by default |
-| `[enhancements] improved_difficulty` | Easy and Monk besides Normal and Hard, `true` by default |
+| `[enhancements] hold_camera_angle`, `camera_speed`, `smooth_camera_framing` | Enhanced Camera: off, 100 (50 to 200) and off by default |
+| `screenshot_notifications` | the notice with a preview after each photo, `true` by default |
 | `[display] render_percent` | the 3D resolution, in percent of the console's screen height (100: 720 lines handheld, 1080 docked) |
 | `[display] vsync`, `fps_cap`, `aniso` | |
 | `[game]` | the game's own options (volumes, brightness, Versus rules); `override_original = true` applies them over the save |

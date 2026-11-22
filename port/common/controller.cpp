@@ -13,7 +13,16 @@ namespace openshao::controller {
 namespace {
 std::atomic<bool> multiplayer{false};
 std::atomic<bool> rumble_enabled{true};
+std::atomic<bool> camera_recenter{false};
+constexpr uint16_t LeftStickClick = 0x40;
 }  // namespace
+
+// each pad as the host polls it (game_info.cpp): Enhanced Camera recenters on player 1's left stick click, which the
+// title's own L3 action keeps, as upstream's default binding does
+void NotePad(int port, const input::Pad& pad) {
+    if (port == 0) camera_recenter = pad.connected && (pad.buttons & LeftStickClick);
+}
+bool CameraRecenterDown() { return !multiplayer && camera_recenter; }
 
 void Update() {}
 void Shutdown() {}

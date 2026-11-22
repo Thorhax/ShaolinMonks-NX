@@ -31,6 +31,8 @@ void NameThread(const char* name);
 void OnRenderThread();
 // the title's main menu asked to quit (openshao::RequestExit)
 bool ExitRequested();
+// where Photo Mode saves its photos: the photos folder in the data folder
+std::filesystem::path PhotosFolder();
 
 }  // namespace port
 
